@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -46,6 +47,7 @@
     <div class="p-8 max-w-[1400px] mx-auto" id="view"></div>
   </main>
 </div>
+<div id="modalHost"></div>
 
 <script>
 /* ============================ DADOS (MOCK) ============================ */
@@ -274,7 +276,7 @@ function viewCadastro(){
   return pageHeader('Cadastro de Funcionários', `${FUNC.length} colaboradores ativos (protótipo)`)
   + `<div class="flex justify-between items-center mb-4">
        <div class="relative"><input placeholder="Buscar nome..." class="pl-9 pr-3 py-2 border border-slate-200 rounded text-sm w-72" oninput="filtrarCad(this.value)"><i data-feather="search" class="w-4 h-4 absolute left-3 top-2.5 text-slate-400"></i></div>
-       <button class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="plus" class="w-4 h-4"></i>Novo cadastro</button>
+       <button onclick="abrirCadastro(null)" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="plus" class="w-4 h-4"></i>Novo cadastro</button>
      </div>`
   + card(`<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-50 border-b border-slate-200 text-slate-600">
       <tr><th class="px-4 py-3 text-left">Funcionário</th><th class="px-4 py-3 text-left">Cargo</th><th class="px-4 py-3 text-center">Pontos</th><th class="px-4 py-3 text-left">Setor</th><th class="px-4 py-3 text-right">Salário</th><th class="px-4 py-3 text-right">Mín. Garantido</th><th class="px-4 py-3 text-center">Adiant.</th><th class="px-4 py-3"></th></tr></thead>
@@ -286,7 +288,7 @@ function viewCadastro(){
         <td class="px-4 py-3 text-right">${money(f.salario)}</td>
         <td class="px-4 py-3 text-right ${f.minimo?'text-amber-600 font-semibold':'text-slate-300'}">${f.minimo?money(f.minimo):'—'}</td>
         <td class="px-4 py-3 text-center"><span class="badge bg-green-100 text-green-700">sim</span></td>
-        <td class="px-4 py-3 text-right"><button class="text-blue-600 hover:underline text-xs">Editar</button></td>
+        <td class="px-4 py-3 text-right"><button onclick="abrirCadastro(${i})" class="text-blue-600 hover:underline text-xs">Editar</button></td>
       </tr>`).join('')}</tbody></table></div>`);
 }
 function filtrarCad(q){ q=q.toLowerCase(); document.querySelectorAll('.cadrow').forEach(r=>{ r.style.display = r.dataset.n.includes(q)?'':'none'; }); }
@@ -563,6 +565,10 @@ function viewComissao(){
   const c = calcular();
   function inp(label,val,onch,suf=''){return `<div><label class="text-xs font-medium text-slate-500 block mb-1">${label}</label><div class="flex items-center gap-1"><input type="number" value="${val}" onchange="${onch}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm text-right">${suf?`<span class='text-slate-400 text-sm'>${suf}</span>`:''}</div></div>`;}
   return pageHeader('Cálculo da Comissão Quinzenal','1ª Quinzena Abr/2026 — premissas, rateio e resultado por colaborador')
+  + `<div class="flex justify-end gap-2 mb-4">
+       <button onclick="window.print()" class="px-3 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100 flex items-center gap-2"><i data-feather="printer" class="w-4 h-4"></i>Imprimir / PDF</button>
+       <button onclick="exportarComissaoCSV()" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>Exportar (CSV / Excel)</button>
+     </div>`
   // Cascata
   + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="trending-down" class="w-4 h-4 text-blue-600"></i>Premissas da taxa de serviço</h3>
       <div class="grid grid-cols-4 gap-4 mb-4">
@@ -634,6 +640,67 @@ function viewRanking(){
     </div></div>`);
 }
 
+/* ============================ MODAL DE CADASTRO ============================ */
+let modalCad = null; // {index:int|null, ...campos}
+function abrirCadastro(i){
+  if(i===null||i===undefined){ modalCad={index:null, nome:'', cargo:CARGOS[3].cargo, status:'Normal', regime:'CLT', salario:2059.95, minimo:0, adiantamento:'sim', beneficios:0}; }
+  else { const f=FUNC[i]; modalCad={index:i, nome:f.nome, cargo:f.cargo, status:f.status||'Normal', regime:f.regime||'CLT', salario:f.salario, minimo:f.minimo||0, adiantamento:f.adiantamento||'sim', beneficios:f.beneficios||0}; }
+  render();
+}
+function fecharModal(){ modalCad=null; render(); }
+function salvarCadastro(){
+  const g=id=>(document.getElementById(id)||{}).value;
+  const dados={ nome:g('cad_nome').trim(), cargo:g('cad_cargo'), status:g('cad_status'), regime:g('cad_regime'),
+                salario:+g('cad_salario')||0, minimo:+g('cad_minimo')||0, adiantamento:g('cad_adiantamento'), beneficios:+g('cad_beneficios')||0 };
+  if(!dados.nome){ alert('Informe o nome do funcionário.'); return; }
+  if(modalCad.index===null) FUNC.push(dados); else FUNC[modalCad.index]={...FUNC[modalCad.index], ...dados};
+  modalCad=null; current='cadastro'; render();
+}
+function modalHTML(){
+  if(!modalCad) return '';
+  const m=modalCad; const novo=m.index===null;
+  const sel=(id,val,opts,onch='')=>`<select id="${id}" ${onch} class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${opts.map(o=>`<option ${o===val?'selected':''}>${o}</option>`).join('')}</select>`;
+  const field=(lb,inner)=>`<div><label class="text-xs font-medium text-slate-500 block mb-1">${lb}</label>${inner}</div>`;
+  return `<div class="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4 animate-fade" onclick="if(event.target===this)fecharModal()">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-2xl">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+        <h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="${novo?'user-plus':'edit-2'}" class="w-5 h-5 text-blue-600"></i>${novo?'Novo cadastro':'Editar funcionário'}</h3>
+        <button onclick="fecharModal()" class="text-slate-400 hover:text-slate-700"><i data-feather="x" class="w-5 h-5"></i></button>
+      </div>
+      <div class="p-6 grid grid-cols-2 gap-4">
+        <div class="col-span-2">${field('Nome completo', `<input id="cad_nome" value="${m.nome.replace(/"/g,'&quot;')}" placeholder="Nome do funcionário" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}</div>
+        ${field('Cargo (Tabela de Cargos)', sel('cad_cargo', m.cargo, CARGOS.map(c=>c.cargo), 'onchange="atualizaPreviewCargo()"'))}
+        ${field('Status', sel('cad_status', m.status, ['Normal','Processo de Admissão','Extra','Processo de Desligamento']))}
+        ${field('Regime de contrato', sel('cad_regime', m.regime, ['CLT','PJ','Contrato de Experiência','Sem Regime','Sócio']))}
+        ${field('Adiantamento salarial', sel('cad_adiantamento', m.adiantamento, ['sim','não']))}
+        ${field('Salário (R$)', `<input id="cad_salario" type="number" step="0.01" value="${m.salario}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
+        ${field('Mínimo garantido (R$)', `<input id="cad_minimo" type="number" step="0.01" value="${m.minimo}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
+        ${field('Benefícios (R$)', `<input id="cad_beneficios" type="number" step="0.01" value="${m.beneficios}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
+        <div class="col-span-2 p-3 bg-slate-50 rounded text-sm flex items-center gap-4" id="cargoPreview"></div>
+      </div>
+      <div class="flex justify-end gap-2 px-6 py-4 border-t border-slate-200">
+        <button onclick="fecharModal()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Cancelar</button>
+        <button onclick="salvarCadastro()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="check" class="w-4 h-4"></i>${novo?'Cadastrar':'Salvar alterações'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+function atualizaPreviewCargo(){
+  const c=(document.getElementById('cad_cargo')||{}).value; const el=document.getElementById('cargoPreview');
+  if(el) el.innerHTML=`<span class="text-slate-500">Pontos-base:</span> <strong>${num(ptsDoCargo(c),2)}</strong> <span class="text-slate-300">•</span> <span class="text-slate-500">Setor:</span> ${setorBadge(setorDoCargo(c))}`;
+}
+
+/* ============================ EXPORTAÇÃO ============================ */
+function exportarComissaoCSV(){
+  const c=calcular(); const sep=';';
+  const head=['Funcionário','Setor','Pontos Base','Pontos Qualificados','Pontos Descontados','Pontos Finais','Comissão','Repique','Ranking','Comissão Total','Salário','Benefícios','Mínimo Garantido','TOTAL','Pago Dentro','Pago Fora'];
+  const br=v=>typeof v==='number'?v.toFixed(2).replace('.',','):'"'+String(v).replace(/"/g,'""')+'"';
+  const linhas=c.rows.map(r=>[r.f.nome,r.setor,r.base,r.Z,r.desc,r.finais,r.comissao,r.repique,r.ranking,r.comTotal,r.f.salario,r.f.beneficios,r.complementoMin,r.total,r.pagoDentro,r.pagoFora].map(br).join(sep));
+  const csv='﻿'+[head.join(sep), ...linhas].join('\r\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='comissao-quinzenal-amauri.csv'; a.click(); URL.revokeObjectURL(a.href);
+}
+
 /* ============================ RENDER ============================ */
 function render(){
   renderNav();
@@ -641,7 +708,9 @@ function render(){
   const el = document.getElementById('view');
   el.className = 'p-8 max-w-[1400px] mx-auto animate-fade';
   el.innerHTML = v();
+  document.getElementById('modalHost').innerHTML = modalHTML();
   feather.replace();
+  if(modalCad) atualizaPreviewCargo();
 }
 render();
 </script>
