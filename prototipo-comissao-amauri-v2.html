@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mercearia Amauri — Comissão Pro (Protótipo)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/feather-icons/4.29.0/feather.min.js"></script>
+<style>
+  *{scroll-behavior:smooth}
+  .animate-fade{animation:fade 200ms ease-in}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .nav-active{background:#eff6ff;border-left:4px solid #2563eb;padding-left:.75rem}
+  ::-webkit-scrollbar{height:10px;width:10px}
+  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:6px}
+  table.grid-ponto td,table.grid-ponto th{border:1px solid #e2e8f0}
+  .badge{font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600;display:inline-block}
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+<div class="flex h-screen overflow-hidden">
+
+  <!-- SIDEBAR -->
+  <aside class="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0">
+    <div class="p-6 border-b border-slate-200">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg flex items-center justify-center">
+          <span class="text-white font-bold text-lg">A</span>
+        </div>
+        <div>
+          <h1 class="font-bold text-slate-900 leading-tight">Amauri</h1>
+          <p class="text-xs text-slate-500">Comissão Pro</p>
+        </div>
+      </div>
+    </div>
+    <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1" id="nav"></nav>
+    <div class="p-4 border-t border-slate-200 text-xs text-slate-500">
+      <p>Período: <strong class="text-slate-900">1ª Quinz • Abr/2026</strong></p>
+      <p class="mt-2">Status: <span class="badge bg-amber-100 text-amber-700">Em fechamento</span></p>
+      <p class="mt-3 text-[10px] text-slate-400">Protótipo • dados simulados</p>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="flex-1 overflow-auto">
+    <div class="p-8 max-w-[1400px] mx-auto" id="view"></div>
+  </main>
+</div>
+
+<script>
+/* ============================ DADOS (MOCK) ============================ */
+// % de desconto proporcional aos pontos do funcionário
+const REGRAS = { falta:0.10, atraso:0.05, advertencia:0.05, valorDobra:150, valorExtra:0 };
+
+// Tabela de cargos: cargo -> pontos base + setor (configurável)
+const CARGOS = [
+  {cargo:'GERENTE DE REGIAO', pts:9, setor:'Liderança'},
+  {cargo:'MAITRE', pts:7, setor:'Liderança'},
+  {cargo:'GARCOM SOMMELIER', pts:6, setor:'Salão'},
+  {cargo:'GARCOM 1', pts:5, setor:'Salão'},
+  {cargo:'GARCOM 2', pts:4, setor:'Salão'},
+  {cargo:'GARCOM 3', pts:3, setor:'Salão'},
+  {cargo:'BUSTER', pts:2.5, setor:'Salão'},
+  {cargo:'CUMIM', pts:1, setor:'Salão'},
+  {cargo:'HOSTESS', pts:1, setor:'Porta'},
+  {cargo:'OPERADOR DE CAIXA', pts:0.25, setor:'Porta'},
+  {cargo:'CHEF', pts:5, setor:'Cozinha'},
+  {cargo:'SOUS CHEF', pts:2, setor:'Cozinha'},
+  {cargo:'COZINHEIRO 1', pts:1.25, setor:'Cozinha'},
+  {cargo:'COZINHEIRO 2', pts:1, setor:'Cozinha'},
+  {cargo:'COZINHEIRO 3', pts:0.75, setor:'Cozinha'},
+  {cargo:'AUXILIAR DE COZINHA', pts:0.5, setor:'Cozinha'},
+  {cargo:'CHEFE DE BAR', pts:2, setor:'Bar'},
+  {cargo:'BARMAN', pts:1.2, setor:'Bar'},
+  {cargo:'AUXILIAR DE BAR', pts:0.5, setor:'Bar'},
+  {cargo:'ANALISTA DE COMPRAS', pts:0.75, setor:'Outros'},
+  {cargo:'AUXILIAR ADMINISTRATIVO', pts:0.75, setor:'Escritório'},
+  {cargo:'AUXILIAR DE LIMPEZA', pts:0.5, setor:'Outros'},
+];
+const ptsDoCargo = c => (CARGOS.find(x=>x.cargo===c)||{pts:0}).pts;
+const setorDoCargo = c => (CARGOS.find(x=>x.cargo===c)||{setor:'Outros'}).setor;
+
+const SETORES = ['Salão','Cozinha','Bar','Porta','Escritório','Liderança','Outros'];
+
+// Rateio da Taxa Distribuída por setor + ranking (soma 100%)
+let RATEIO = { 'Salão':40, 'Cozinha':30, 'Bar':10, 'Porta':5, 'Escritório':2, 'Liderança':5, 'Outros':3, 'Ranking':5 };
+
+// % da taxa de serviço dentro / fora do holerite (geral p/ todos)
+let HOLERITE = { dentro:60, fora:40 };
+
+// % do bolo do ranking por colocação (soma 100%)
+let RANKING_PCT = [40,30,15,10,5,0,0,0,0,0];
+
+// Premissas da quinzena
+let PREMISSAS = { taxaTotal:110706.56, retencaoPct:33, extras:0, diasPeriodo:16 };
+
+// Funcionários (subconjunto representativo da base real)
+const FUNC = [
+  {nome:'ALYFER JONATAN DOS SANTOS ROQUE', cargo:'BARMAN', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'LUIZ VIEIRA', cargo:'CHEF', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'CLAUDIO OLIVEIRA DIAS', cargo:'MAITRE', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'MARCIO ROBERTO DE OLIVEIRA', cargo:'MAITRE', salario:4118.78, minimo:0, beneficios:0},
+  {nome:'ALBERTO DIAS AMORIM', cargo:'GARCOM 1', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'FRANCINEI MEDEIROS LEITE', cargo:'GARCOM 1', salario:2059.95, minimo:2800, beneficios:120},
+  {nome:'ADRIANO DE OLIVEIRA FERREIRA', cargo:'GARCOM 3', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'FRANCISCO JHONS', cargo:'GARCOM 3', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'AMANDA PINHEIRO DE SENNA', cargo:'BUSTER', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'PAULO BEZERRA LIMA', cargo:'CUMIM', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'CLAUDY ANNE FERREIRA', cargo:'COZINHEIRO 1', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'JULIA MARTINS SOUZA', cargo:'COZINHEIRO 1', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'PAULINA SANTOS DA SILVA', cargo:'COZINHEIRO 3', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'FRANCISCO EDUARDO DA SILVA', cargo:'AUXILIAR DE COZINHA', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'NAZIEL LINO DOS SANTOS', cargo:'CHEFE DE BAR', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'ERLANDIO GOMES DA SILVA', cargo:'BARMAN', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'JONAS SOUTO DA SILVA', cargo:'AUXILIAR DE BAR', salario:4118.78, minimo:0, beneficios:0},
+  {nome:'ANTONIA CREMILDA DE SOUSA', cargo:'OPERADOR DE CAIXA', salario:2080, minimo:0, beneficios:0},
+  {nome:'ANDREA DA SILVA FERNANDES', cargo:'AUXILIAR DE LIMPEZA', salario:2059.95, minimo:0, beneficios:0},
+  {nome:'THIAGO AZEVEDO', cargo:'AUXILIAR ADMINISTRATIVO', salario:2500, minimo:0, beneficios:0},
+  {nome:'ROSENILDO MARTINS DOS SANTOS', cargo:'ANALISTA DE COMPRAS', salario:4118.78, minimo:0, beneficios:0},
+];
+
+// Escala simulada: a maioria "Normal" os 16 dias; alguns com faltas/atrasos.
+// status por funcionário = {falta, atraso, advertencia, dobra, extra} (qtd) — resto Normal
+const ESCALA = {
+  'JULIA MARTINS SOUZA':{falta:2},
+  'ANDREA DA SILVA FERNANDES':{falta:1},
+  'FRANCISCO EDUARDO DA SILVA':{atraso:2},
+  'PAULO BEZERRA LIMA':{advertencia:1},
+  'FRANCISCO JHONS':{atraso:1, dobra:1},
+};
+
+// Ranking: top vendedores (ordem)
+let RANKING_NOMES = ['ALBERTO DIAS AMORIM','FRANCINEI MEDEIROS LEITE','ADRIANO DE OLIVEIRA FERREIRA','FRANCISCO JHONS','AMANDA PINHEIRO DE SENNA'];
+
+// Cartão de ponto REAL lido do PDF (Secullum Ponto Web) — simulação de importação
+const CARTAO = {
+  func:'ALYFER JONATAN DOS SANTOS ROQUE', funcao:'BARMAN', depto:'SALÃO',
+  adm:'20/02/2026', periodo:'26/04/2026 a 25/05/2026', fonte:'Secullum Ponto Web', bancoTotal:'+03:59',
+  dias:[{"d": "26/04", "wd": "Dom", "st": "Normal", "ent": "09:21", "sai": "16:20", "horas": 5.98, "turno": "Almoço", "dobra": false, "sld": "-00:31", "rev": false},{"d": "27/04", "wd": "Seg", "st": "Normal", "ent": "15:24", "sai": "23:01", "horas": 6.62, "turno": "Jantar", "dobra": false, "sld": "", "rev": false},{"d": "28/04", "wd": "Ter", "st": "Normal", "ent": "16:15", "sai": "23:36", "horas": 6.35, "turno": "Jantar", "dobra": false, "sld": "", "rev": false},{"d": "29/04", "wd": "Qua", "st": "Folga", "ent": "", "sai": "", "horas": 0.0, "turno": "", "dobra": false, "sld": "", "rev": false},{"d": "30/04", "wd": "Qui", "st": "Normal", "ent": "16:28", "sai": "01:01", "horas": 7.55, "turno": "Jantar", "dobra": false, "sld": "+01:03", "rev": false},{"d": "01/05", "wd": "Sex", "st": "Normal", "ent": "16:28", "sai": "00:58", "horas": 8.0, "turno": "Jantar", "dobra": false, "sld": "+01:30", "rev": false},{"d": "02/05", "wd": "Sáb", "st": "Normal", "ent": "16:28", "sai": "01:15", "horas": 8.28, "turno": "Jantar", "dobra": false, "sld": "+01:47", "rev": false},{"d": "03/05", "wd": "Dom", "st": "Normal", "ent": "09:36", "sai": "16:46", "horas": 6.17, "turno": "Almoço", "dobra": false, "sld": "-00:20", "rev": false},{"d": "04/05", "wd": "Seg", "st": "Normal", "ent": "15:11", "sai": "23:45", "horas": 7.57, "turno": "Jantar", "dobra": false, "sld": "+01:04", "rev": false},{"d": "05/05", "wd": "Ter", "st": "Normal", "ent": "16:25", "sai": "22:11", "horas": 4.77, "turno": "Jantar", "dobra": false, "sld": "-01:44", "rev": false},{"d": "06/05", "wd": "Qua", "st": "Normal", "ent": "10:00", "sai": "16:00", "horas": 5.0, "turno": "Almoço", "dobra": false, "sld": "-01:30", "rev": false},{"d": "07/05", "wd": "Qui", "st": "Folga", "ent": "", "sai": "", "horas": 0.0, "turno": "", "dobra": false, "sld": "", "rev": false},{"d": "08/05", "wd": "Sex", "st": "Normal", "ent": "16:06", "sai": "00:23", "horas": 7.28, "turno": "Jantar", "dobra": false, "sld": "+00:47", "rev": false},{"d": "09/05", "wd": "Sáb", "st": "Normal", "ent": "16:06", "sai": "00:17", "horas": 7.18, "turno": "Jantar", "dobra": false, "sld": "+00:41", "rev": false},{"d": "10/05", "wd": "Dom", "st": "Normal", "ent": "09:48", "sai": "17:00", "horas": 6.7, "turno": "Almoço", "dobra": false, "sld": "+00:12", "rev": false},{"d": "11/05", "wd": "Seg", "st": "Normal", "ent": "15:42", "sai": "23:45", "horas": 7.05, "turno": "Jantar", "dobra": false, "sld": "+00:33", "rev": false},{"d": "12/05", "wd": "Ter", "st": "Normal", "ent": "10:00", "sai": "17:20", "horas": 6.42, "turno": "Almoço", "dobra": false, "sld": "", "rev": false},{"d": "13/05", "wd": "Qua", "st": "Folga", "ent": "", "sai": "", "horas": 0.0, "turno": "", "dobra": false, "sld": "", "rev": false},{"d": "14/05", "wd": "Qui", "st": "Normal", "ent": "16:26", "sai": "23:57", "horas": 6.52, "turno": "Jantar", "dobra": false, "sld": "", "rev": false},{"d": "15/05", "wd": "Sex", "st": "Normal", "ent": "15:25", "sai": "00:32", "horas": 8.12, "turno": "Jantar", "dobra": false, "sld": "+01:37", "rev": false},{"d": "16/05", "wd": "Sáb", "st": "Atestado", "ent": "", "sai": "", "horas": 0.0, "turno": "", "dobra": false, "sld": "", "rev": true},{"d": "17/05", "wd": "Dom", "st": "Folga", "ent": "", "sai": "", "horas": 0.0, "turno": "", "dobra": false, "sld": "", "rev": false},{"d": "18/05", "wd": "Seg", "st": "Normal", "ent": "15:25", "sai": "23:25", "horas": 7.0, "turno": "Jantar", "dobra": false, "sld": "+00:30", "rev": false},{"d": "19/05", "wd": "Ter", "st": "Normal", "ent": "16:15", "sai": "22:40", "horas": 5.42, "turno": "Jantar", "dobra": false, "sld": "-01:05", "rev": false},{"d": "20/05", "wd": "Qua", "st": "Normal", "ent": "16:22", "sai": "23:35", "horas": 6.22, "turno": "Jantar", "dobra": false, "sld": "-00:17", "rev": false},{"d": "21/05", "wd": "Qui", "st": "Folga", "ent": "", "sai": "", "horas": 0.0, "turno": "", "dobra": false, "sld": "", "rev": false},{"d": "22/05", "wd": "Sex", "st": "Normal", "ent": "16:18", "sai": "00:54", "horas": 7.6, "turno": "Jantar", "dobra": false, "sld": "+01:06", "rev": false},{"d": "23/05", "wd": "Sáb", "st": "Normal", "ent": "16:18", "sai": "00:53", "horas": 7.58, "turno": "Jantar", "dobra": false, "sld": "+01:05", "rev": false},{"d": "24/05", "wd": "Dom", "st": "Normal", "ent": "16:12", "sai": "22:52", "horas": 5.67, "turno": "Jantar", "dobra": false, "sld": "-00:50", "rev": false},{"d": "25/05", "wd": "Seg", "st": "Normal", "ent": "15:16", "sai": "21:07", "horas": 4.85, "turno": "Jantar", "dobra": false, "sld": "-01:39", "rev": false}]
+};
+let pontoImportado = false;
+
+// EXTRAS contratados por dia (origem: formulário de aprovação dos líderes)
+let EXTRAS = [
+  {data:'2026-05-01', setor:'Salão', funcao:'Garçom Extra', qtd:3, diaria:120, lider:'Marcio Roberto', status:'Aprovado'},
+  {data:'2026-05-01', setor:'Cozinha', funcao:'Aux. Cozinha Extra', qtd:1, diaria:100, lider:'Luiz Vieira', status:'Aprovado'},
+  {data:'2026-05-02', setor:'Salão', funcao:'Garçom Extra', qtd:4, diaria:120, lider:'Marcio Roberto', status:'Aprovado'},
+  {data:'2026-05-03', setor:'Bar', funcao:'Barman Extra', qtd:2, diaria:130, lider:'Naziel Lino', status:'Aprovado'},
+  {data:'2026-05-09', setor:'Salão', funcao:'Garçom Extra', qtd:5, diaria:120, lider:'Marcio Roberto', status:'Aprovado'},
+  {data:'2026-05-10', setor:'Salão', funcao:'Garçom Extra', qtd:3, diaria:120, lider:'Marcio Roberto', status:'Aprovado'},
+  {data:'2026-05-10', setor:'Porta', funcao:'Hostess Extra', qtd:1, diaria:110, lider:'Claudio Oliveira', status:'Pendente'},
+  {data:'2026-05-16', setor:'Cozinha', funcao:'Aux. Cozinha Extra', qtd:2, diaria:100, lider:'Luiz Vieira', status:'Aprovado'},
+  {data:'2026-05-17', setor:'Salão', funcao:'Garçom Extra', qtd:4, diaria:120, lider:'Marcio Roberto', status:'Pendente'},
+  {data:'2026-05-23', setor:'Salão', funcao:'Garçom Extra', qtd:6, diaria:120, lider:'Marcio Roberto', status:'Aprovado'},
+  {data:'2026-05-24', setor:'Bar', funcao:'Barman Extra', qtd:2, diaria:130, lider:'Naziel Lino', status:'Aprovado'},
+  {data:'2026-05-30', setor:'Salão', funcao:'Garçom Extra', qtd:3, diaria:120, lider:'Marcio Roberto', status:'Aprovado'},
+  {data:'2026-05-31', setor:'Salão', funcao:'Garçom Extra', qtd:5, diaria:120, lider:'Marcio Roberto', status:'Aprovado'},
+];
+let extrasMes = {ano:2026, mes:5}; // calendário exibido (Maio/2026)
+
+/* ============================ MOTOR DE CÁLCULO ============================ */
+function calcular(){
+  const P = PREMISSAS;
+  const retencao = P.taxaTotal * P.retencaoPct/100;
+  const distribuida = P.taxaTotal - retencao - P.extras;
+
+  // 1) métricas por funcionário
+  const rows = FUNC.map(f=>{
+    const base = ptsDoCargo(f.cargo);
+    const setor = setorDoCargo(f.cargo);
+    const e = ESCALA[f.nome]||{};
+    const falta=e.falta||0, atraso=e.atraso||0, adv=e.advertencia||0, dobra=e.dobra||0, extra=e.extra||0;
+    // dias trabalhados p/ comissão (simplificado: período cheio menos faltas)
+    const diasTrab = Math.max(0, P.diasPeriodo - falta);
+    const Z = (diasTrab/P.diasPeriodo)*base;            // pontos qualificados
+    let desc = Z*(falta*REGRAS.falta + atraso*REGRAS.atraso + adv*REGRAS.advertencia);
+    desc = Math.min(desc, Z);                            // não passa do total
+    let finais = Z - desc; if(finais>0 && finais<0.1) finais=0.1; if(diasTrab===0) finais=0;
+    const recebeRepique = desc<=0;
+    return {f, setor, base, falta, atraso, adv, dobra, extra, diasTrab, Z, desc, finais, recebeRepique};
+  });
+
+  // 2) R$/ponto por setor
+  const somaZ = {}, somaDesc={}, somaFinaisQ={};
+  SETORES.forEach(s=>{somaZ[s]=0;somaDesc[s]=0;somaFinaisQ[s]=0});
+  rows.forEach(r=>{ somaZ[r.setor]+=r.Z; somaDesc[r.setor]+=r.desc; if(r.recebeRepique) somaFinaisQ[r.setor]+=r.finais; });
+  const rsPonto={}, poolRepique={}, rsPontoRepique={};
+  SETORES.forEach(s=>{
+    const bucket = distribuida*(RATEIO[s]||0)/100;
+    rsPonto[s] = somaZ[s]>0 ? bucket/somaZ[s] : 0;
+    poolRepique[s] = somaDesc[s]*rsPonto[s];
+    rsPontoRepique[s] = somaFinaisQ[s]>0 ? poolRepique[s]/somaFinaisQ[s] : 0;
+  });
+
+  // 3) ranking
+  const bucketRanking = distribuida*(RATEIO['Ranking']||0)/100;
+  const bonusRanking = {};
+  RANKING_NOMES.forEach((n,i)=>{ bonusRanking[n]= bucketRanking*(RANKING_PCT[i]||0)/100; });
+
+  // 4) totais por funcionário
+  rows.forEach(r=>{
+    r.comissao = r.finais * rsPonto[r.setor];
+    r.repique = r.recebeRepique ? r.finais * rsPontoRepique[r.setor] : 0;
+    r.ranking = bonusRanking[r.f.nome]||0;
+    r.comTotal = r.comissao + r.repique + r.ranking;
+    r.comDentro = r.comTotal*HOLERITE.dentro/100;   // comissão paga por dentro
+    r.comFora = r.comTotal*HOLERITE.fora/100;        // comissão paga por fora
+    const bruto = r.f.salario + r.comTotal + r.f.beneficios;
+    r.complementoMin = Math.max(0, (r.f.minimo||0) - bruto);
+    r.total = bruto + r.complementoMin;
+    // Partição do total: holerite (oficial) vs fora
+    r.pagoDentro = r.f.salario + r.f.beneficios + r.complementoMin + r.comDentro;
+    r.pagoFora = r.comFora;
+  });
+
+  return {retencao, distribuida, rows, rsPonto, poolRepique, bucketRanking, bonusRanking,
+          totalComissao: rows.reduce((a,r)=>a+r.comTotal,0),
+          totalFolha: rows.reduce((a,r)=>a+r.total,0)};
+}
+const money = v => 'R$ '+ (v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const num = (v,d=2) => (v||0).toLocaleString('pt-BR',{minimumFractionDigits:d,maximumFractionDigits:d});
+
+/* ============================ NAVEGAÇÃO ============================ */
+const PAGES = [
+  {id:'dashboard', label:'Dashboard', icon:'grid'},
+  {id:'cadastro', label:'Cadastro', icon:'users'},
+  {id:'config', label:'Configurações', icon:'sliders'},
+  {id:'ponto', label:'Folha de Ponto', icon:'calendar'},
+  {id:'extras', label:'Extras', icon:'user-plus'},
+  {id:'comissao', label:'Comissão Quinzenal', icon:'dollar-sign'},
+  {id:'ranking', label:'Ranking', icon:'award'},
+];
+let current='dashboard';
+function go(id){ current=id; render(); }
+function renderNav(){
+  document.getElementById('nav').innerHTML = PAGES.map(p=>`
+    <button onclick="go('${p.id}')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left text-slate-700 hover:bg-slate-100 transition ${current===p.id?'nav-active text-blue-700 font-semibold':''}">
+      <i data-feather="${p.icon}" class="w-4 h-4"></i><span class="text-sm font-medium">${p.label}</span>
+    </button>`).join('');
+}
+
+function card(inner, cls=''){ return `<div class="bg-white rounded-lg border border-slate-200 ${cls}">${inner}</div>`; }
+function pageHeader(title, sub){ return `<div class="mb-6"><h1 class="text-3xl font-bold text-slate-900 mb-1">${title}</h1><p class="text-slate-500 text-sm">${sub||''}</p></div>`; }
+function setorBadge(s){
+  const c={'Salão':'bg-blue-100 text-blue-700','Cozinha':'bg-orange-100 text-orange-700','Bar':'bg-purple-100 text-purple-700','Porta':'bg-teal-100 text-teal-700','Escritório':'bg-slate-200 text-slate-700','Liderança':'bg-amber-100 text-amber-700','Outros':'bg-slate-100 text-slate-600'}[s]||'bg-slate-100';
+  return `<span class="badge ${c}">${s}</span>`;
+}
+
+/* ============================ PÁGINAS ============================ */
+function viewDashboard(){
+  const c = calcular();
+  const kpis = [
+    {l:'TAXA DE SERVIÇO', v:money(PREMISSAS.taxaTotal), s:'Total arrecadado no período', col:'text-slate-900'},
+    {l:'COMISSÃO A DISTRIBUIR', v:money(c.distribuida), s:`Após ${PREMISSAS.retencaoPct}% retenção`, col:'text-blue-600'},
+    {l:'TOTAL DE COMISSÕES', v:money(c.totalComissao), s:`${FUNC.length} colaboradores`, col:'text-green-600'},
+    {l:'FOLHA TOTAL', v:money(c.totalFolha), s:'Salário + comissão + benefícios', col:'text-slate-900'},
+  ];
+  const faltas = c.rows.filter(r=>r.falta>0);
+  return pageHeader('Dashboard','Visão geral do fechamento — 1ª Quinzena de Abril/2026')
+    + `<div class="grid grid-cols-4 gap-4 mb-6">${kpis.map(k=>card(`<div class="p-6"><p class="text-xs text-slate-500 font-semibold mb-2">${k.l}</p><p class="text-2xl font-bold ${k.col}">${k.v}</p><p class="text-xs text-slate-400 mt-2">${k.s}</p></div>`)).join('')}</div>`
+    + `<div class="grid grid-cols-3 gap-4">`
+    + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="pie-chart" class="w-4 h-4 text-blue-600"></i>Rateio por setor</h3>${
+        SETORES.concat(['Ranking']).map(s=>{
+          const pct=RATEIO[s]||0; return `<div class="flex items-center gap-2 mb-2 text-sm"><div class="w-24 text-slate-600">${s}</div><div class="flex-1 bg-slate-100 rounded h-3"><div class="bg-blue-500 h-3 rounded" style="width:${pct}%"></div></div><div class="w-10 text-right font-medium">${pct}%</div></div>`;
+        }).join('')
+      }</div>`,'col-span-2')
+    + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="alert-triangle" class="w-4 h-4 text-red-500"></i>Faltas no período</h3>${
+        faltas.length? faltas.map(r=>`<div class="flex justify-between text-sm py-1 border-b border-slate-100"><span>${r.f.nome.split(' ').slice(0,2).join(' ')}</span><span class="badge bg-red-100 text-red-700">${r.falta} falta(s)</span></div>`).join('') : '<p class="text-sm text-slate-400">Sem faltas registradas.</p>'
+      }</div>`)
+    + `</div>`;
+}
+
+function viewCadastro(){
+  return pageHeader('Cadastro de Funcionários', `${FUNC.length} colaboradores ativos (protótipo)`)
+  + `<div class="flex justify-between items-center mb-4">
+       <div class="relative"><input placeholder="Buscar nome..." class="pl-9 pr-3 py-2 border border-slate-200 rounded text-sm w-72" oninput="filtrarCad(this.value)"><i data-feather="search" class="w-4 h-4 absolute left-3 top-2.5 text-slate-400"></i></div>
+       <button class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="plus" class="w-4 h-4"></i>Novo cadastro</button>
+     </div>`
+  + card(`<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-50 border-b border-slate-200 text-slate-600">
+      <tr><th class="px-4 py-3 text-left">Funcionário</th><th class="px-4 py-3 text-left">Cargo</th><th class="px-4 py-3 text-center">Pontos</th><th class="px-4 py-3 text-left">Setor</th><th class="px-4 py-3 text-right">Salário</th><th class="px-4 py-3 text-right">Mín. Garantido</th><th class="px-4 py-3 text-center">Adiant.</th><th class="px-4 py-3"></th></tr></thead>
+      <tbody id="cadBody">${FUNC.map((f,i)=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40 cadrow" data-n="${f.nome.toLowerCase()}">
+        <td class="px-4 py-3 font-medium text-slate-900">${f.nome}</td>
+        <td class="px-4 py-3 text-slate-600">${f.cargo}</td>
+        <td class="px-4 py-3 text-center font-semibold">${num(ptsDoCargo(f.cargo),2)}</td>
+        <td class="px-4 py-3">${setorBadge(setorDoCargo(f.cargo))}</td>
+        <td class="px-4 py-3 text-right">${money(f.salario)}</td>
+        <td class="px-4 py-3 text-right ${f.minimo?'text-amber-600 font-semibold':'text-slate-300'}">${f.minimo?money(f.minimo):'—'}</td>
+        <td class="px-4 py-3 text-center"><span class="badge bg-green-100 text-green-700">sim</span></td>
+        <td class="px-4 py-3 text-right"><button class="text-blue-600 hover:underline text-xs">Editar</button></td>
+      </tr>`).join('')}</tbody></table></div>`);
+}
+function filtrarCad(q){ q=q.toLowerCase(); document.querySelectorAll('.cadrow').forEach(r=>{ r.style.display = r.dataset.n.includes(q)?'':'none'; }); }
+
+function viewConfig(){
+  const somaRateio = Object.values(RATEIO).reduce((a,b)=>a+b,0);
+  const somaRank = RANKING_PCT.reduce((a,b)=>a+b,0);
+  return pageHeader('Configurações','Regras de remuneração, pontuação e rateio (campos editáveis)')
+  + `<div class="grid grid-cols-2 gap-4">`
+  // Regras de desconto
+  + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="percent" class="w-4 h-4 text-blue-600"></i>Descontos de pontos (proporcional)</h3>
+      <p class="text-xs text-slate-500 mb-4">Desconto = % sobre os pontos do funcionário. Ex.: 10 pts e 1 falta → −1 pt.</p>
+      ${[['Falta','falta'],['Atraso','atraso'],['Advertência','advertencia']].map(([l,k])=>`
+        <div class="flex items-center justify-between mb-3"><span class="text-sm text-slate-600">${l}</span>
+        <div class="flex items-center gap-1"><input type="number" value="${REGRAS[k]*100}" onchange="REGRAS.${k}=this.value/100;render()" class="w-20 px-2 py-1 border border-slate-200 rounded text-sm text-right"><span class="text-slate-400 text-sm">%</span></div></div>`).join('')}
+    </div>`)
+  // Valores R$
+  + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="dollar-sign" class="w-4 h-4 text-green-600"></i>Valores fixos</h3>
+      <div class="flex items-center justify-between mb-3"><span class="text-sm text-slate-600">Dobra (por turno)</span><input type="number" value="${REGRAS.valorDobra}" onchange="REGRAS.valorDobra=+this.value;render()" class="w-28 px-2 py-1 border border-slate-200 rounded text-sm text-right"></div>
+      <div class="flex items-center justify-between"><span class="text-sm text-slate-600">Diária de extra</span><input type="number" value="${REGRAS.valorExtra}" onchange="REGRAS.valorExtra=+this.value;render()" class="w-28 px-2 py-1 border border-slate-200 rounded text-sm text-right"></div>
+    </div>`)
+  // Rateio por setor
+  + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="pie-chart" class="w-4 h-4 text-blue-600"></i>Rateio da taxa distribuída</h3>
+      ${SETORES.concat(['Ranking']).map(s=>`<div class="flex items-center justify-between mb-2"><span class="text-sm text-slate-600">${s}</span>
+        <div class="flex items-center gap-1"><input type="number" value="${RATEIO[s]||0}" onchange="RATEIO['${s}']=+this.value;render()" class="w-20 px-2 py-1 border border-slate-200 rounded text-sm text-right"><span class="text-slate-400 text-sm">%</span></div></div>`).join('')}
+      <div class="mt-3 pt-3 border-t flex justify-between text-sm font-semibold ${somaRateio===100?'text-green-600':'text-red-600'}"><span>Soma</span><span>${somaRateio}% ${somaRateio===100?'✓':'⚠ deve ser 100%'}</span></div>
+    </div>`)
+  // Holerite dentro/fora
+  + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="file-text" class="w-4 h-4 text-blue-600"></i>Taxa de serviço no holerite</h3>
+      <p class="text-xs text-slate-500 mb-4">% geral para todos os colaboradores.</p>
+      <div class="flex items-center justify-between mb-3"><span class="text-sm text-slate-600">Por DENTRO do holerite</span><div class="flex items-center gap-1"><input type="number" value="${HOLERITE.dentro}" onchange="HOLERITE.dentro=+this.value;HOLERITE.fora=100-this.value;render()" class="w-20 px-2 py-1 border border-slate-200 rounded text-sm text-right"><span class="text-slate-400 text-sm">%</span></div></div>
+      <div class="flex items-center justify-between"><span class="text-sm text-slate-600">Por FORA do holerite</span><div class="flex items-center gap-1"><input type="number" value="${HOLERITE.fora}" disabled class="w-20 px-2 py-1 border border-slate-100 bg-slate-50 rounded text-sm text-right"><span class="text-slate-400 text-sm">%</span></div></div>
+    </div>`)
+  + `</div>`
+  // Tabela de cargos
+  + `<div class="mt-4">`+card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="list" class="w-4 h-4 text-blue-600"></i>Tabela de cargos → pontos → setor <span class="text-xs font-normal text-slate-400">(qualquer cargo pode ir a qualquer setor)</span></h3>
+      <div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-3 py-2 text-left">Cargo</th><th class="px-3 py-2 text-center">Pontos</th><th class="px-3 py-2 text-left">Setor</th></tr></thead><tbody>
+      ${CARGOS.map((c,i)=>`<tr class="border-b border-slate-100"><td class="px-3 py-2">${c.cargo}</td>
+        <td class="px-3 py-2 text-center"><input type="number" step="0.05" value="${c.pts}" onchange="CARGOS[${i}].pts=+this.value;render()" class="w-20 px-2 py-1 border border-slate-200 rounded text-right"></td>
+        <td class="px-3 py-2"><select onchange="CARGOS[${i}].setor=this.value;render()" class="px-2 py-1 border border-slate-200 rounded">${SETORES.map(s=>`<option ${s===c.setor?'selected':''}>${s}</option>`).join('')}</select></td></tr>`).join('')}
+      </tbody></table></div></div>`)+`</div>`;
+}
+
+const STATUS_OPTS = ['Normal','Falta','Atraso','Dobra','Folga','Advertência','Atestado','Extra','Férias','Afastamento'];
+function stBadge(st){
+  const m={'Normal':'bg-green-100 text-green-700','Folga':'bg-slate-100 text-slate-500','Atestado':'bg-amber-100 text-amber-700','Falta':'bg-red-100 text-red-700','Atraso':'bg-orange-100 text-orange-700','Dobra':'bg-purple-100 text-purple-700','Extra':'bg-blue-100 text-blue-700','Férias':'bg-teal-100 text-teal-700','Afastamento':'bg-slate-200 text-slate-600','Advertência':'bg-rose-100 text-rose-700'}[st]||'bg-slate-100';
+  return `<span class="badge ${m}">${st}</span>`;
+}
+let verDetalhe=false;
+// códigos curtos por status p/ a grade
+const ST_ABBR={'Normal':['N','text-green-700'],'Falta':['F','bg-red-100 text-red-700 font-bold'],'Atraso':['A','bg-orange-100 text-orange-700 font-bold'],'Folga':['Fg','text-slate-400'],'Atestado':['At','bg-amber-100 text-amber-700 font-semibold'],'Dobra':['D','bg-purple-100 text-purple-700 font-bold'],'Extra':['E','bg-blue-100 text-blue-700 font-bold'],'Advertência':['Ad','bg-rose-100 text-rose-700 font-bold'],'Férias':['Fé','bg-teal-100 text-teal-700'],'Afastamento':['Af','bg-slate-200 text-slate-600']};
+const DIAS16 = CARTAO.dias.slice(0,16); // 1ª quinzena do período do cartão (26/04 a 11/05)
+let LIMITE_HE = 2; // horas extras/dia ACIMA disso = pagar; até esse limite = vai p/ banco
+function sldToMin(s){ if(!s) return 0; const sig=s[0]==='-'?-1:1; const [h,m]=s.replace(/[+\-]/,'').split(':').map(Number); return sig*(h*60+m); }
+function fmtMin(min){ const sig=min<0?'-':'+'; const a=Math.abs(Math.round(min)); return `${sig}${String(Math.floor(a/60)).padStart(2,'0')}:${String(a%60).padStart(2,'0')}`; }
+// Analisa banco x horas extras a pagar conforme a regra do limite diário
+function analisaBanco(slds){
+  let banco=0, pagar=0; const diasPagar=[];
+  slds.forEach((s,i)=>{ const min=sldToMin(s); if(min===0) return;
+    if(min > LIMITE_HE*60){ pagar+=min; diasPagar.push(i); }   // >2h no dia -> pagar
+    else { banco+=min; }                                        // <=2h (ou débito) -> banco
+  });
+  return {banco, pagar, diasPagar};
+}
+
+// Escala por funcionário (16 dias). ALYFER = lido do arquivo real; demais = simulados.
+function escalaDe(f){
+  if(f.nome===CARTAO.func) return DIAS16.map(x=>x.st);
+  const e=ESCALA[f.nome]||{};
+  const arr=Array(16).fill('Normal');
+  const off=f.nome.length%5;
+  [3,10].forEach(b=>{arr[(b+off)%16]='Folga';});           // ~2 folgas
+  let i=0; const put=(st,from,dir=1)=>{let j=from;while(j>=0&&j<16&&arr[j]!=='Normal')j+=dir; if(j>=0&&j<16)arr[j]=st;};
+  for(let k=0;k<(e.falta||0);k++) put('Falta',0,1);
+  for(let k=0;k<(e.atraso||0);k++) put('Atraso',15,-1);
+  for(let k=0;k<(e.advertencia||0);k++) put('Advertência',8,1);
+  for(let k=0;k<(e.dobra||0);k++) put('Dobra',5,1);
+  return arr;
+}
+
+function viewPonto(){
+  const banner = card(`<div class="p-4 flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg">
+      <div class="flex items-center gap-3"><i data-feather="upload-cloud" class="w-5 h-5 text-blue-600"></i>
+      <div><p class="text-sm font-medium text-slate-900">Importar Cartão de Ponto</p><p class="text-xs text-slate-600">PDF / Excel / CSV (Secullum, etc.) — o sistema lê as batidas e preenche a grade abaixo</p></div></div>
+      <div class="flex gap-2">
+        ${pontoImportado?`<button onclick="pontoImportado=false;verDetalhe=false;render()" class="px-3 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Limpar</button>`:''}
+        <button onclick="pontoImportado=true;render()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="upload-cloud" class="w-4 h-4"></i>${pontoImportado?'Reimportar':'Selecionar arquivo'}</button>
+      </div>
+    </div>`,'mb-5 border-0 bg-transparent p-0');
+
+  const aviso = pontoImportado
+    ? `<div class="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800 flex items-center gap-2"><i data-feather="check-circle" class="w-4 h-4"></i> Cartões importados (${CARTAO.fonte}). Grade preenchida. Linha do <strong>ALYFER</strong> = dados reais do PDF; demais = simulados. Revise os destaques e valide.</div>`
+    : `<div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800 flex items-center gap-2"><i data-feather="file-text" class="w-4 h-4"></i> Cartão do <strong>ALYFER JONATAN</strong> importado (dados reais do PDF) — linha já preenchida abaixo. Importe os demais cartões para completar a grade.</div>`;
+
+  // GRADE
+  const head = `<tr><th class="px-3 py-2 text-left sticky left-0 bg-slate-50 z-10">Funcionário</th>${
+      DIAS16.map(x=>`<th class="px-1 py-2 w-9 text-[10px] font-medium ${['Sáb','Dom'].includes(x.wd)?'text-blue-500':'text-slate-500'}">${x.d.slice(0,2)}<br><span class="font-normal">${x.wd.slice(0,1)}</span></th>`).join('')
+    }<th class="px-2 py-2 bg-slate-100">Falt</th><th class="px-2 py-2 bg-slate-100">Atr</th><th class="px-2 py-2 bg-slate-100">Trab</th><th class="px-2 py-2 bg-slate-100">Banco</th><th class="px-2 py-2 bg-slate-100">Status</th></tr>`;
+
+  const body = FUNC.map(f=>{
+    const real = f.nome===CARTAO.func;
+    const esc = (real||pontoImportado) ? escalaDe(f) : null;   // ALYFER sempre preenchido
+    const cnt = {}; if(esc) esc.forEach(s=>cnt[s]=(cnt[s]||0)+1);
+    const fal=cnt['Falta']||0, atr=cnt['Atraso']||0;
+    const trab = esc ? (cnt['Normal']||0)+(cnt['Atraso']||0)+(cnt['Dobra']||0)+(cnt['Extra']||0)+(cnt['Advertência']||0)+(cnt['Folga']||0) : 0;
+    const ba = real ? analisaBanco(DIAS16.map(x=>x.sld)) : null;
+    const pagar = ba ? ba.pagar : 0;
+    const revRow = !esc ? false : (real ? DIAS16.some(x=>x.rev) : (fal>0||atr>0));
+    const flag = !esc ? '<span class="badge bg-slate-100 text-slate-400">—</span>'
+      : pagar>0 ? '<span class="badge bg-red-100 text-red-700">pagar HE</span>'
+      : revRow ? '<span class="badge bg-amber-100 text-amber-700">revisar</span>' : '<span class="badge bg-green-100 text-green-700">ok</span>';
+    const cells = DIAS16.map((d,i)=>{
+      if(!esc) return `<td class="text-center text-slate-200">·</td>`;
+      const [ab,cl]=ST_ABBR[esc[i]]||['?',''];
+      const pagarDia = ba && ba.diasPagar.includes(i);
+      const tip = real ? `title="${DIAS16[i].horas?DIAS16[i].horas.toFixed(2)+'h · '+DIAS16[i].turno:DIAS16[i].st}${DIAS16[i].sld?' · banco '+DIAS16[i].sld:''}${pagarDia?' · HE A PAGAR (>'+LIMITE_HE+'h)':''}"` : '';
+      return `<td class="text-center ${pagarDia?'bg-red-50':''}" ${tip}><span class="inline-block w-7 rounded ${cl} text-[11px] py-0.5 ${real?'cursor-help':''} ${pagarDia?'ring-2 ring-red-400':''}">${ab}</span></td>`;
+    }).join('');
+    return `<tr class="hover:bg-blue-50/40 ${real?'bg-blue-50/30':''}">
+      <td class="px-3 py-1.5 font-medium text-slate-800 sticky left-0 ${real?'bg-blue-50/60':'bg-white'} whitespace-nowrap">${real?'<i data-feather="file-text" class="w-3 h-3 inline text-blue-500"></i> ':''}${f.nome.split(' ').slice(0,2).join(' ')}</td>
+      ${cells}
+      <td class="text-center bg-slate-50 font-semibold ${fal?'text-red-600':'text-slate-300'}">${esc?(fal||'0'):'—'}</td>
+      <td class="text-center bg-slate-50 font-semibold ${atr?'text-orange-600':'text-slate-300'}">${esc?(atr||'0'):'—'}</td>
+      <td class="text-center bg-slate-50 font-semibold ${esc?'text-slate-700':'text-slate-300'}">${esc?trab:'—'}</td>
+      <td class="text-center bg-slate-50 ${ba?(ba.banco>=0?'text-green-600':'text-red-600'):'text-slate-300'}">
+        ${ba?`<div class="font-semibold">${fmtMin(ba.banco)}</div>${ba.pagar>0?`<div class="text-[10px] text-red-600 font-bold leading-tight">HE pagar ${fmtMin(ba.pagar)}</div>`:''}`:'—'}
+      </td>
+      <td class="text-center bg-slate-50">${flag}</td>
+    </tr>`;
+  }).join('');
+
+  const grade = card(`<div class="overflow-x-auto"><table class="w-full text-xs grid-ponto"><thead class="bg-slate-50 text-slate-600">${head}</thead><tbody>${body}</tbody></table></div>
+    <div class="p-3 flex justify-between items-center border-t border-slate-200 flex-wrap gap-2">
+      <p class="text-[11px] text-slate-500">Legenda: ${Object.entries(ST_ABBR).map(([k,[ab,cl]])=>`<span class="inline-block w-6 text-center rounded ${cl} mx-0.5">${ab}</span>${k}`).join(' · ')}</p>
+      <div class="flex gap-2">
+        <button onclick="verDetalhe=!verDetalhe;render()" class="px-3 py-2 border border-blue-300 text-blue-700 rounded text-sm hover:bg-blue-50 flex items-center gap-2"><i data-feather="search" class="w-4 h-4"></i>${verDetalhe?'Ocultar':'Ver'} leitura do cartão (ALYFER)</button>
+        <button onclick="alert('Escala validada (protótipo). Isto alimentaria o cálculo da comissão.')" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700 flex items-center gap-2"><i data-feather="check" class="w-4 h-4"></i>Validar e fechar escala</button>
+      </div>
+    </div>`);
+
+  const controle = `<div class="mb-3 flex items-center justify-between flex-wrap gap-2 text-sm">
+      <div class="flex items-center gap-2 text-slate-600"><i data-feather="clock" class="w-4 h-4 text-blue-600"></i>
+        Regra de horas extras: acima de
+        <input type="number" step="0.5" min="0" value="${LIMITE_HE}" onchange="LIMITE_HE=+this.value;render()" class="w-16 px-2 py-1 border border-slate-200 rounded text-right">
+        h/dia → <span class="badge bg-red-100 text-red-700">pagar</span>; até o limite → vai p/ <span class="badge bg-green-100 text-green-700">banco</span>.
+      </div>
+      <span class="text-[11px] text-slate-400">Dias com HE a pagar ficam destacados <span class="ring-2 ring-red-400 rounded px-1">assim</span> na grade.</span>
+    </div>`;
+  return pageHeader('Folha de Ponto','Importação do controle de ponto → grade da equipe → validação humana')
+    + banner + aviso + controle + grade + (verDetalhe ? viewCartaoDetalhe() : '');
+}
+
+// Drill-down: como o cartão do ALYFER foi lido (batida a batida)
+function viewCartaoDetalhe(){
+  const d = CARTAO;
+  const cnt={}; STATUS_OPTS.forEach(s=>cnt[s]=0); d.dias.forEach(x=>cnt[x.st]=(cnt[x.st]||0)+1);
+  const totHoras = d.dias.reduce((a,x)=>a+(x.horas||0),0);
+  const chips=Object.entries(cnt).filter(([,v])=>v>0).map(([k,v])=>`<span class="badge bg-slate-100 text-slate-700 mr-1">${k}: ${v}</span>`).join('');
+  return `<div class="mt-5 animate-fade">`
+  + `<div class="flex items-center gap-2 mb-3"><i data-feather="file-text" class="w-4 h-4 text-blue-600"></i><h3 class="font-bold text-slate-900">Leitura do cartão — ${d.func.split(' ').slice(0,2).join(' ')} <span class="font-normal text-slate-400 text-sm">(${d.funcao} · ${d.depto} · ${d.periodo})</span></h3></div>`
+  + `<div class="mb-3 text-sm flex items-center gap-2 flex-wrap"><span class="text-slate-500">Resumo:</span> ${chips}<span class="badge bg-indigo-100 text-indigo-700">Total: ${totHoras.toFixed(1)}h</span><span class="badge bg-slate-100 text-slate-600">Banco: ${d.bancoTotal}</span></div>`
+  + card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200">
+      <tr><th class="px-3 py-2 text-left">Data</th><th class="px-2 py-2">Dia</th><th class="px-2 py-2">Entrada</th><th class="px-2 py-2">Saída</th><th class="px-2 py-2">Horas</th><th class="px-2 py-2">Turno</th><th class="px-2 py-2">Banco</th><th class="px-3 py-2 text-left">Status sugerido</th><th class="px-2 py-2">Sit.</th></tr></thead><tbody>
+      ${d.dias.map((x,i)=>`<tr class="border-b border-slate-100 ${x.rev?'bg-amber-50/50':''} hover:bg-blue-50/40">
+        <td class="px-3 py-1.5 font-medium text-slate-700">${x.d}</td><td class="px-2 py-1.5 text-center text-slate-500">${x.wd}</td>
+        <td class="px-2 py-1.5 text-center ${x.ent?'':'text-slate-300'}">${x.ent||'—'}</td><td class="px-2 py-1.5 text-center ${x.sai?'':'text-slate-300'}">${x.sai||'—'}</td>
+        <td class="px-2 py-1.5 text-center ${x.horas?'text-slate-700 font-medium':'text-slate-300'}">${x.horas?x.horas.toFixed(2)+'h':'—'}</td>
+        <td class="px-2 py-1.5 text-center">${x.turno?`<span class="badge ${x.turno==='Almoço'?'bg-yellow-100 text-yellow-700':x.turno==='Jantar'?'bg-indigo-100 text-indigo-700':'bg-slate-100 text-slate-600'}">${x.turno}</span>`:'<span class="text-slate-300">—</span>'}</td>
+        <td class="px-2 py-1.5 text-center ${x.sld.startsWith('+')?'text-green-600':x.sld.startsWith('-')?'text-red-500':'text-slate-300'}">${x.sld||'—'}</td>
+        <td class="px-3 py-1.5"><select onchange="CARTAO.dias[${i}].st=this.value;CARTAO.dias[${i}].rev=false;render()" class="px-2 py-1 border ${x.rev?'border-amber-300':'border-slate-200'} rounded text-xs">${STATUS_OPTS.map(s=>`<option ${s===x.st?'selected':''}>${s}</option>`).join('')}</select></td>
+        <td class="px-2 py-1.5 text-center">${x.rev?'<span class="badge bg-amber-100 text-amber-700">revisar</span>':'<span class="badge bg-green-100 text-green-700">ok</span>'}</td>
+      </tr>`).join('')}
+      </tbody></table></div>
+      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Como foi lido: o sistema pareia as batidas (Entrada1/Saída1/Entrada2/Saída2), soma as <strong>horas trabalhadas</strong> (tratando virada de meia-noite), identifica o <strong>turno</strong> pela 1ª batida, lê Folga/Atestado de dia inteiro e o saldo do banco de horas. Sinaliza para revisão os atípicos (ex.: 16/05 atestado). Total no período: <strong>${totHoras.toFixed(1)}h</strong> em ${d.dias.filter(x=>x.st==='Normal').length} dias.</div>`)
+  + `</div>`;
+}
+
+/* ---------- EXTRAS (calendário + aprovação) ---------- */
+const MESES=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+const DOW=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+function ymd(a,m,d){return `${a}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;}
+function extrasDia(ds){return EXTRAS.filter(e=>e.data===ds);}
+function mudarMes(delta){let m=extrasMes.mes+delta,a=extrasMes.ano; if(m<1){m=12;a--;} if(m>12){m=1;a++;} extrasMes={ano:a,mes:m}; render();}
+function addExtra(){
+  const g=id=>(document.getElementById(id)||{}).value;
+  const data=g('ex_data'); if(!data){alert('Informe a data do extra.');return;}
+  EXTRAS.push({data, setor:g('ex_setor'), funcao:g('ex_funcao')||'Extra', qtd:+g('ex_qtd')||1, diaria:+g('ex_diaria')||0, lider:g('ex_lider'), status:'Aprovado'});
+  const d=new Date(data); extrasMes={ano:d.getFullYear(), mes:d.getMonth()+1}; render();
+}
+function setExtraStatus(i,s){EXTRAS[i].status=s;render();}
+function viewExtras(){
+  const {ano,mes}=extrasMes;
+  const pref=`${ano}-${String(mes).padStart(2,'0')}`;
+  const doMes=EXTRAS.map((e,i)=>({e,i})).filter(o=>o.e.data.startsWith(pref));
+  const aprov=doMes.filter(o=>o.e.status==='Aprovado');
+  const pend=doMes.filter(o=>o.e.status==='Pendente');
+  const totalQtd=aprov.reduce((a,o)=>a+o.e.qtd,0);
+  const custo=aprov.reduce((a,o)=>a+o.e.qtd*o.e.diaria,0);
+  const diasComExtra=new Set(aprov.map(o=>o.e.data)).size;
+  const kpis=[
+    ['EXTRAS CONTRATADOS', totalQtd, `em ${diasComExtra} dias`, 'text-blue-600'],
+    ['CUSTO TOTAL', money(custo), 'qtd × diária (aprovados)', 'text-slate-900'],
+    ['PENDENTES DE APROVAÇÃO', pend.length, pend.length?'aguardando líder':'tudo aprovado', pend.length?'text-amber-600':'text-green-600'],
+    ['MÉDIA POR DIA ATIVO', diasComExtra?(totalQtd/diasComExtra).toFixed(1):'0', 'extras/dia com movimento', 'text-slate-900'],
+  ];
+
+  // calendário
+  const first=new Date(ano,mes-1,1); const startDow=first.getDay(); const dim=new Date(ano,mes,0).getDate();
+  const cells=[]; for(let i=0;i<startDow;i++)cells.push(null); for(let d=1;d<=dim;d++)cells.push(d); while(cells.length%7)cells.push(null);
+  const qtdDoDia=d=>extrasDia(ymd(ano,mes,d)).filter(e=>e.status==='Aprovado').reduce((a,e)=>a+e.qtd,0);
+  const maxQ=Math.max(1,...Array.from({length:dim},(_,i)=>qtdDoDia(i+1)));
+  const calendar = card(`<div class="p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4 text-blue-600"></i>${MESES[mes-1]} / ${ano}</h3>
+        <div class="flex gap-1">
+          <button onclick="mudarMes(-1)" class="p-2 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-left" class="w-4 h-4"></i></button>
+          <button onclick="mudarMes(1)" class="p-2 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-right" class="w-4 h-4"></i></button>
+        </div>
+      </div>
+      <div class="grid grid-cols-7 gap-1.5 mb-1">${DOW.map(d=>`<div class="text-center text-xs font-semibold ${['Dom','Sáb'].includes(d)?'text-blue-500':'text-slate-400'}">${d}</div>`).join('')}</div>
+      <div class="grid grid-cols-7 gap-1.5">${cells.map(d=>{
+        if(!d) return `<div class="h-20 rounded bg-slate-50/50"></div>`;
+        const ds=ymd(ano,mes,d); const itens=extrasDia(ds); const q=qtdDoDia(d);
+        const cst=itens.filter(e=>e.status==='Aprovado').reduce((a,e)=>a+e.qtd*e.diaria,0);
+        const hasPend=itens.some(e=>e.status==='Pendente');
+        const ratio=q/maxQ; const bg = q===0?'bg-white':ratio>0.66?'bg-blue-600 text-white':ratio>0.33?'bg-blue-400 text-white':'bg-blue-100 text-blue-800';
+        const tip = itens.length?`title="${itens.map(e=>e.qtd+'× '+e.funcao+' ('+e.setor+') — '+e.status).join('\\n')}"`:'';
+        const claro = q && ratio>0.33;
+        return `<div ${tip} class="h-20 rounded border border-slate-200 p-1.5 flex flex-col ${bg} ${q?'cursor-help':''}">
+          <div class="flex justify-between items-start"><span class="text-xs font-semibold ${claro?'text-white':'text-slate-500'}">${d}</span>${hasPend?'<span class="w-2 h-2 rounded-full bg-amber-400" title="Há extra pendente"></span>':''}</div>
+          ${q?`<div class="mt-auto"><div class="${claro?'text-white':'text-blue-700'} text-lg font-bold leading-none">${q}</div><div class="text-[9px] ${claro?'text-blue-100':'text-slate-400'}">${money(cst).replace('R$ ','R$ ')}</div></div>`:''}
+        </div>`;
+      }).join('')}</div>
+      <p class="text-[11px] text-slate-400 mt-3">Intensidade da cor = quantidade de extras no dia. Ponto âmbar = há extra pendente de aprovação. Passe o mouse para detalhes.</p>
+    </div>`);
+
+  // formulário de aprovação
+  const setoresOpt=SETORES.map(s=>`<option>${s}</option>`).join('');
+  const lideres=['Marcio Roberto','Claudio Oliveira','Luiz Vieira','Naziel Lino','Thiago Azevedo'];
+  const form = card(`<div class="p-5"><h3 class="font-bold text-slate-900 mb-1 flex items-center gap-2"><i data-feather="user-plus" class="w-4 h-4 text-blue-600"></i>Aprovar extra</h3>
+      <p class="text-xs text-slate-500 mb-4">Formulário preenchido pelo líder ao contratar um extra.</p>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-slate-500 block mb-1">Data</label><input id="ex_data" type="date" value="${ano}-${String(mes).padStart(2,'0')}-15" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Setor</label><select id="ex_setor" class="w-full px-2 py-2 border border-slate-200 rounded text-sm">${setoresOpt}</select></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Função</label><input id="ex_funcao" placeholder="Garçom Extra" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Quantidade</label><input id="ex_qtd" type="number" min="1" value="1" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Diária (R$)</label><input id="ex_diaria" type="number" value="120" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Líder responsável</label><select id="ex_lider" class="w-full px-2 py-2 border border-slate-200 rounded text-sm">${lideres.map(l=>`<option>${l}</option>`).join('')}</select></div>
+      </div>
+      <button onclick="addExtra()" class="mt-4 w-full px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center justify-center gap-2"><i data-feather="check" class="w-4 h-4"></i>Registrar e aprovar extra</button>
+    </div>`);
+
+  // lista
+  const lista = card(`<div class="p-5"><h3 class="font-bold text-slate-900 mb-4 flex items-center gap-2"><i data-feather="list" class="w-4 h-4 text-blue-600"></i>Extras do mês</h3>
+      <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-2 py-2 text-left">Data</th><th class="px-2 py-2 text-left">Setor</th><th class="px-2 py-2 text-left">Função</th><th class="px-2 py-2 text-center">Qtd</th><th class="px-2 py-2 text-right">Diária</th><th class="px-2 py-2 text-right">Total</th><th class="px-2 py-2 text-left">Líder</th><th class="px-2 py-2 text-center">Status</th></tr></thead><tbody>
+      ${doMes.sort((a,b)=>a.e.data.localeCompare(b.e.data)).map(o=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+        <td class="px-2 py-1.5 font-medium">${o.e.data.slice(8,10)}/${o.e.data.slice(5,7)}</td>
+        <td class="px-2 py-1.5">${setorBadge(o.e.setor)}</td><td class="px-2 py-1.5 text-slate-600">${o.e.funcao}</td>
+        <td class="px-2 py-1.5 text-center font-semibold">${o.e.qtd}</td><td class="px-2 py-1.5 text-right text-slate-500">${money(o.e.diaria)}</td>
+        <td class="px-2 py-1.5 text-right font-semibold">${money(o.e.qtd*o.e.diaria)}</td><td class="px-2 py-1.5 text-slate-600">${o.e.lider}</td>
+        <td class="px-2 py-1.5 text-center">${o.e.status==='Aprovado'?'<span class="badge bg-green-100 text-green-700">Aprovado</span>':`<button onclick="setExtraStatus(${o.i},'Aprovado')" class="badge bg-amber-100 text-amber-700 hover:bg-amber-200">Aprovar ✓</button>`}</td>
+      </tr>`).join('')||'<tr><td colspan="8" class="text-center text-slate-400 py-6">Nenhum extra neste mês.</td></tr>'}
+      </tbody></table></div>
+      <div class="mt-3 text-[11px] text-slate-500 flex items-center gap-2"><i data-feather="link" class="w-3.5 h-3.5"></i>O custo total dos extras aprovados (${money(custo)}) alimenta o campo "Gasto com extras" na cascata da Comissão Quinzenal.</div>
+    </div>`);
+
+  return pageHeader('Extras','Calendário de extras contratados por dia — aprovados pelos líderes')
+    + `<div class="grid grid-cols-4 gap-4 mb-5">${kpis.map(k=>card(`<div class="p-5"><p class="text-xs text-slate-500 font-semibold mb-2">${k[0]}</p><p class="text-2xl font-bold ${k[3]}">${k[1]}</p><p class="text-xs text-slate-400 mt-2">${k[2]}</p></div>`)).join('')}</div>`
+    + `<div class="grid grid-cols-3 gap-4 mb-4"><div class="col-span-2">${calendar}</div><div>${form}</div></div>`
+    + lista;
+}
+
+function viewComissao(){
+  const c = calcular();
+  function inp(label,val,onch,suf=''){return `<div><label class="text-xs font-medium text-slate-500 block mb-1">${label}</label><div class="flex items-center gap-1"><input type="number" value="${val}" onchange="${onch}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm text-right">${suf?`<span class='text-slate-400 text-sm'>${suf}</span>`:''}</div></div>`;}
+  return pageHeader('Cálculo da Comissão Quinzenal','1ª Quinzena Abr/2026 — premissas, rateio e resultado por colaborador')
+  // Cascata
+  + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="trending-down" class="w-4 h-4 text-blue-600"></i>Premissas da taxa de serviço</h3>
+      <div class="grid grid-cols-4 gap-4 mb-4">
+        ${inp('Taxa de Serviço Total (R$)', PREMISSAS.taxaTotal, 'PREMISSAS.taxaTotal=+this.value;render()')}
+        ${inp('Retenção da casa', PREMISSAS.retencaoPct, 'PREMISSAS.retencaoPct=+this.value;render()','%')}
+        ${inp('Gasto com extras (R$)', PREMISSAS.extras, 'PREMISSAS.extras=+this.value;render()')}
+        ${inp('Dias do período', PREMISSAS.diasPeriodo, 'PREMISSAS.diasPeriodo=+this.value;render()')}
+      </div>
+      <div class="grid grid-cols-3 gap-4">
+        <div class="p-3 bg-slate-50 rounded"><p class="text-xs text-slate-500">Retenção</p><p class="font-bold text-slate-700">${money(c.retencao)}</p></div>
+        <div class="p-3 bg-blue-50 rounded"><p class="text-xs text-slate-500">Taxa Distribuída</p><p class="font-bold text-blue-700">${money(c.distribuida)}</p></div>
+        <div class="p-3 bg-green-50 rounded"><p class="text-xs text-slate-500">Total em comissões</p><p class="font-bold text-green-700">${money(c.totalComissao)}</p></div>
+      </div>
+      <div class="mt-4 grid grid-cols-2 gap-4">
+        <div class="p-3 border border-slate-200 rounded flex items-center justify-between"><span class="text-sm text-slate-600">Comissão por <strong>dentro</strong> do holerite</span><span class="font-semibold text-slate-800">${HOLERITE.dentro}% • ${money(c.totalComissao*HOLERITE.dentro/100)}</span></div>
+        <div class="p-3 border border-slate-200 rounded flex items-center justify-between"><span class="text-sm text-slate-600">Comissão por <strong>fora</strong> do holerite</span><span class="font-semibold text-slate-800">${HOLERITE.fora}% • ${money(c.totalComissao*HOLERITE.fora/100)}</span></div>
+      </div>
+    </div>`,'mb-4')
+  // R$/ponto por setor
+  + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="hash" class="w-4 h-4 text-blue-600"></i>R$ por ponto, por setor</h3>
+      <div class="grid grid-cols-7 gap-2 text-center text-sm">${SETORES.map(s=>`<div class="p-2 bg-slate-50 rounded"><p class="text-xs text-slate-500">${s}</p><p class="font-bold text-slate-800">${money(c.rsPonto[s])}</p></div>`).join('')}</div>
+    </div>`,'mb-4')
+  // Tabela final
+  + card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200">
+      <tr>
+        <th class="px-3 py-3 text-left">Funcionário</th><th class="px-2 py-3 text-left">Setor</th>
+        <th class="px-2 py-3 text-center">Pts Base</th><th class="px-2 py-3 text-center">Pts Qual.</th><th class="px-2 py-3 text-center">Desc.</th><th class="px-2 py-3 text-center">Pts Finais</th>
+        <th class="px-2 py-3 text-right">Comissão</th><th class="px-2 py-3 text-right">Repique</th><th class="px-2 py-3 text-right">Ranking</th>
+        <th class="px-2 py-3 text-right bg-blue-50">Com. Total</th>
+        <th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">Mín.Gar.</th>
+        <th class="px-3 py-3 text-right bg-green-50">TOTAL</th>
+        <th class="px-2 py-3 text-right bg-indigo-50">Pago p/ DENTRO<br><span class="text-[10px] font-normal">holerite (${HOLERITE.dentro}%)</span></th>
+        <th class="px-2 py-3 text-right bg-indigo-50">Pago p/ FORA<br><span class="text-[10px] font-normal">(${HOLERITE.fora}%)</span></th>
+      </tr></thead><tbody>
+      ${c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+        <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${r.f.nome.split(' ').slice(0,2).join(' ')}</td>
+        <td class="px-2 py-2">${setorBadge(r.setor)}</td>
+        <td class="px-2 py-2 text-center">${num(r.base,2)}</td>
+        <td class="px-2 py-2 text-center">${num(r.Z,2)}</td>
+        <td class="px-2 py-2 text-center ${r.desc>0?'text-red-600 font-semibold':'text-slate-300'}">${r.desc>0?'−'+num(r.desc,2):'—'}</td>
+        <td class="px-2 py-2 text-center font-semibold">${num(r.finais,2)}</td>
+        <td class="px-2 py-2 text-right">${money(r.comissao)}</td>
+        <td class="px-2 py-2 text-right ${r.repique>0?'text-green-600':'text-slate-300'}">${r.repique>0?money(r.repique):'—'}</td>
+        <td class="px-2 py-2 text-right ${r.ranking>0?'text-amber-600 font-semibold':'text-slate-300'}">${r.ranking>0?money(r.ranking):'—'}</td>
+        <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comTotal)}</td>
+        <td class="px-2 py-2 text-right text-slate-600">${money(r.f.salario)}</td>
+        <td class="px-2 py-2 text-right ${r.f.beneficios?'':'text-slate-300'}">${r.f.beneficios?money(r.f.beneficios):'—'}</td>
+        <td class="px-2 py-2 text-right ${r.complementoMin>0?'text-amber-600 font-semibold':'text-slate-300'}">${r.complementoMin>0?'+'+money(r.complementoMin):'—'}</td>
+        <td class="px-3 py-2 text-right font-bold text-green-700 bg-green-50/50">${money(r.total)}</td>
+        <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.pagoDentro)}</td>
+        <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.pagoFora)}</td>
+      </tr>`).join('')}
+      </tbody></table></div>
+      <div class="p-3 text-xs text-slate-500 border-t border-slate-200 flex items-center gap-2"><i data-feather="info" class="w-3.5 h-3.5"></i> Mín.Gar. = complemento pago quando salário + comissão + benefícios não atingem o mínimo acordado. Linhas com desconto não recebem repique. <strong>Pago p/ DENTRO</strong> (salário + benefícios + mínimo + ${HOLERITE.dentro}% da comissão) <strong>+ Pago p/ FORA</strong> (${HOLERITE.fora}% da comissão) = TOTAL.</div>`);
+}
+
+function viewRanking(){
+  const c = calcular();
+  return pageHeader('Ranking de Vendedores','Premiação por colocação — bolo do ranking: '+money(c.bucketRanking))
+  + card(`<div class="p-6"><div class="grid grid-cols-2 gap-6">
+      <div><h3 class="font-bold mb-3 text-sm text-slate-600">% por colocação (soma 100%)</h3>
+        ${RANKING_PCT.slice(0,6).map((p,i)=>`<div class="flex items-center justify-between mb-2"><span class="text-sm text-slate-600">${i+1}º lugar</span><div class="flex items-center gap-1"><input type="number" value="${p}" onchange="RANKING_PCT[${i}]=+this.value;render()" class="w-20 px-2 py-1 border border-slate-200 rounded text-sm text-right"><span class="text-slate-400 text-sm">%</span></div></div>`).join('')}
+      </div>
+      <div><h3 class="font-bold mb-3 text-sm text-slate-600">Top vendedores (colar do TOTVS)</h3>
+        <table class="w-full text-sm"><thead class="text-slate-500 text-xs"><tr><th class="text-left py-1">#</th><th class="text-left">Vendedor</th><th class="text-right">Bônus</th></tr></thead><tbody>
+        ${RANKING_NOMES.map((n,i)=>`<tr class="border-b border-slate-100"><td class="py-2 font-bold text-slate-400">${i+1}º</td><td class="py-2">${n.split(' ').slice(0,2).join(' ')}</td><td class="py-2 text-right font-semibold text-amber-600">${money(c.bonusRanking[n])}</td></tr>`).join('')}
+        </tbody></table>
+      </div>
+    </div></div>`);
+}
+
+/* ============================ RENDER ============================ */
+function render(){
+  renderNav();
+  const v = {dashboard:viewDashboard,cadastro:viewCadastro,config:viewConfig,ponto:viewPonto,extras:viewExtras,comissao:viewComissao,ranking:viewRanking}[current];
+  const el = document.getElementById('view');
+  el.className = 'p-8 max-w-[1400px] mx-auto animate-fade';
+  el.innerHTML = v();
+  feather.replace();
+}
+render();
+</script>
+</body>
+</html>
