@@ -32,6 +32,7 @@ const S = {
   session:null, perfil:null,
   restaurante:null, config:null,
   setores:[], cargos:[], funcionarios:[], rateio:[], ranking:[], ciclos:[],
+  periodos:[], periodoAtual:null, ponto:[], extras:[],
   loading:false, erro:null,
 };
 let current='dashboard';
@@ -101,7 +102,7 @@ async function carregarDados(){
     const r = await sb.from('restaurantes').select('*').order('id').limit(1).single();
     S.restaurante = r.data;
     const rid = S.restaurante?.id;
-    const [cfg, set, car, fun, rat, rank, cic] = await Promise.all([
+    const [cfg, set, car, fun, rat, rank, cic, per, ext] = await Promise.all([
       sb.from('config_remuneracao').select('*').eq('restaurante_id',rid).single(),
       sb.from('setores').select('*').eq('restaurante_id',rid).order('ordem'),
       sb.from('cargos').select('*, setores(nome)').eq('restaurante_id',rid).order('pontos',{ascending:false}),
@@ -109,12 +110,45 @@ async function carregarDados(){
       sb.from('config_rateio').select('*, setores(nome)').eq('restaurante_id',rid),
       sb.from('ranking_premio').select('*').eq('restaurante_id',rid).order('colocacao'),
       sb.from('ciclos_pagamento').select('*').eq('restaurante_id',rid).order('ordem'),
+      sb.from('periodos').select('*, ciclos_pagamento(nome)').eq('restaurante_id',rid).order('data_inicio',{ascending:false}),
+      sb.from('extras').select('*, setores(nome)').eq('restaurante_id',rid).order('data'),
     ]);
     S.config=cfg.data; S.setores=set.data||[]; S.cargos=car.data||[]; S.funcionarios=fun.data||[];
     S.rateio=rat.data||[]; S.ranking=rank.data||[]; S.ciclos=cic.data||[];
+    S.periodos=per.data||[]; S.extras=ext.data||[];
+    if(!S.periodoAtual && S.periodos.length) S.periodoAtual=S.periodos[0];
+    if(S.periodoAtual) S.periodoAtual=S.periodos.find(p=>p.id===S.periodoAtual.id)||S.periodos[0]||null;
+    await carregarPonto();
     S.erro=null;
   }catch(e){ S.erro='Erro ao carregar dados: '+(e.message||e); }
   S.loading=false;
+}
+async function carregarPonto(){
+  if(!S.periodoAtual){ S.ponto=[]; return; }
+  const { data } = await sb.from('controle_ponto').select('*').eq('periodo_id',S.periodoAtual.id);
+  S.ponto=data||[];
+}
+async function selectPeriodo(id){
+  S.periodoAtual=S.periodos.find(p=>p.id===+id)||null;
+  await carregarPonto(); render();
+}
+function diasEntre(ini,fim){ return Math.round((stripT(new Date(fim+'T00:00:00'))-stripT(new Date(ini+'T00:00:00')))/86400000)+1; }
+function ymdStr(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+async function criarPeriodo(){
+  const cicloId=+val('np_ciclo'), ano=+val('np_ano'), mes=+val('np_mes');
+  const c=S.ciclos.find(x=>x.id===cicloId); if(!c){ alert('Escolha um ciclo.'); return; }
+  const jan=janelaApur(c,ano,mes); const dp=dataPagamento(c,ano,mes);
+  const ini=ymdStr(jan.ini), fim=ymdStr(jan.fim);
+  const rec={ restaurante_id:S.restaurante.id, ciclo_id:cicloId, ano, mes, data_inicio:ini, data_fim:fim,
+    data_pagamento:ymdStr(dp), dias_periodo:diasEntre(ini,fim), taxa_servico_total:0, retencao_pct:Number(S.config.retencao_casa_pct)||33, status:'aberto' };
+  const { data, error }=await sb.from('periodos').insert(rec).select('*, ciclos_pagamento(nome)').single();
+  if(error){ alert('Erro ao criar período: '+error.message); return; }
+  S.periodoAtual=data; await carregarDados(); render();
+}
+async function salvarCampoPeriodo(campo,valor){
+  if(!S.periodoAtual) return;
+  await sb.from('periodos').update({[campo]:valor}).eq('id',S.periodoAtual.id);
+  S.periodoAtual[campo]=valor;
 }
 
 /* ===================== NAVEGAÇÃO ===================== */
@@ -283,7 +317,13 @@ function render(){
   const root=document.getElementById('root');
   if(!S.session){ root.innerHTML=viewLogin(); document.getElementById('modalHost').innerHTML=''; feather.replace(); return; }
   if(S.loading && !S.restaurante){ root.innerHTML=`<div class="min-h-screen flex items-center justify-center text-slate-400">Carregando…</div>`; feather.replace(); return; }
-  const views={dashboard:viewDashboard,cadastro:viewCadastro,config:()=>viewConfig(),ponto:()=>viewStub('Folha de Ponto'),extras:()=>viewStub('Extras'),comissao:()=>viewStub('Comissão Quinzenal'),ranking:()=>viewStub('Ranking'),relatorios:()=>viewStub('Relatórios')};
+  const wv = id => window['_view'+id];
+  const views={dashboard:viewDashboard,cadastro:viewCadastro,config:()=>viewConfig(),
+    ponto:()=>(wv('Ponto')?wv('Ponto')():viewStub('Folha de Ponto')),
+    extras:()=>(wv('Extras')?wv('Extras')():viewStub('Extras')),
+    comissao:()=>(wv('Comissao')?wv('Comissao')():viewStub('Comissão Quinzenal')),
+    ranking:()=>(wv('Ranking')?wv('Ranking')():viewStub('Ranking')),
+    relatorios:()=>(wv('Relatorios')?wv('Relatorios')():viewStub('Relatórios'))};
   const v=views[current]||viewDashboard;
   root.innerHTML=appShell(v());
   document.getElementById('modalHost').innerHTML=modalHTML();
@@ -358,6 +398,150 @@ window.salvarConfig = async function(){
   if(e1){ alert('Erro ao salvar config: '+e1.message); return; }
   await carregarDados(); render();
   alert('Configurações salvas.');
+};
+</script>
+<script>
+/* ===================== COMISSÃO QUINZENAL (motor real) ===================== */
+function agregaPonto(funcId){
+  const cnt={Falta:0,Atraso:0,'Advertência':0,Dobra:0,Extra:0,Normal:0,Folga:0,Atestado:0};
+  S.ponto.filter(p=>p.funcionario_id===funcId).forEach(p=>{ cnt[p.status]=(cnt[p.status]||0)+1; });
+  return cnt;
+}
+function calcComissao(){
+  const p=S.periodoAtual, cfg=S.config; if(!p||!cfg) return null;
+  const dias=Number(p.dias_periodo)||16;
+  const taxaTotal=Number(p.taxa_servico_total)||0;
+  const retPct=Number(p.retencao_pct)||0;
+  const retencao=taxaTotal*retPct/100;
+  const extrasAprov=S.extras.filter(e=>e.status==='Aprovado' && e.periodo_id===p.id);
+  const extrasTotal=extrasAprov.reduce((a,e)=>a+e.quantidade*Number(e.diaria),0);
+  const extrasDesc=extrasTotal*Number(cfg.desc_extras_pct)/100;
+  const distribuida=taxaTotal-retencao-extrasDesc;
+  const ratePct={}; S.setores.forEach(s=>{const r=S.rateio.find(x=>x.tipo==='setor'&&x.setor_id===s.id);ratePct[s.nome]=Number(r?.percentual||0);});
+  const rankingPct=Number((S.rateio.find(x=>x.tipo==='ranking')||{}).percentual||0);
+
+  const rows=S.funcionarios.map(f=>{
+    const cg=f.cargos||{}; const base=Number(cg.pontos||0); const setor=cg.setores?.nome||'Outros';
+    const c=agregaPonto(f.id); const falta=c.Falta,atraso=c.Atraso,adv=c['Advertência'];
+    const diasTrab=Math.max(0,dias-falta);
+    const Z=(diasTrab/dias)*base;
+    let desc=Z*(falta*Number(cfg.desconto_falta_pct)/100 + atraso*Number(cfg.desconto_atraso_pct)/100 + adv*Number(cfg.desconto_advertencia_pct)/100);
+    desc=Math.min(desc,Z);
+    let finais=Z-desc; if(finais>0&&finais<0.1)finais=0.1; if(diasTrab===0)finais=0;
+    return {f,setor,base,falta,atraso,adv,Z,desc,finais,recebeRepique:desc<=0};
+  });
+  const somaZ={},somaDesc={},somaFinQ={}; S.setores.forEach(s=>{somaZ[s.nome]=0;somaDesc[s.nome]=0;somaFinQ[s.nome]=0;});
+  rows.forEach(r=>{somaZ[r.setor]+=r.Z;somaDesc[r.setor]+=r.desc;if(r.recebeRepique)somaFinQ[r.setor]+=r.finais;});
+  const rsPonto={},pool={},rsRep={};
+  S.setores.forEach(s=>{const b=distribuida*(ratePct[s.nome]||0)/100; rsPonto[s.nome]=somaZ[s.nome]>0?b/somaZ[s.nome]:0; pool[s.nome]=somaDesc[s.nome]*rsPonto[s.nome]; rsRep[s.nome]=somaFinQ[s.nome]>0?pool[s.nome]/somaFinQ[s.nome]:0;});
+  rows.forEach(r=>{
+    r.comissao=r.finais*rsPonto[r.setor];
+    r.repique=r.recebeRepique?r.finais*rsRep[r.setor]:0;
+    r.ranking=0; // atribuído na tela de Ranking (próxima etapa)
+    r.comTotal=r.comissao+r.repique+r.ranking;
+    const bruto=Number(r.f.salario)+r.comTotal+Number(r.f.beneficios||0);
+    r.minComp=Math.max(0,Number(r.f.minimo_garantido||0)-bruto);
+    r.total=bruto+r.minComp;
+    r.pagoDentro=Number(r.f.salario)+Number(r.f.beneficios||0)+r.minComp+r.comTotal*Number(cfg.holerite_dentro_pct)/100;
+    r.pagoFora=r.comTotal*Number(cfg.holerite_fora_pct)/100;
+  });
+  return {dias,taxaTotal,retencao,retPct,extrasTotal,extrasDesc,distribuida,rows,rsPonto,
+    bucketRanking:distribuida*rankingPct/100,
+    totalComissao:rows.reduce((a,r)=>a+r.comTotal,0), totalFolha:rows.reduce((a,r)=>a+r.total,0)};
+}
+
+function seletorPeriodo(){
+  const anoAtual=new Date().getFullYear();
+  const opts=S.periodos.map(p=>`<option value="${p.id}" ${S.periodoAtual&&p.id===S.periodoAtual.id?'selected':''}>${p.ciclos_pagamento?.nome||'Período'} · ${fmtDM(new Date(p.data_inicio+'T00:00:00'))}–${fmtDM(new Date(p.data_fim+'T00:00:00'))}/${p.ano}</option>`).join('');
+  return card(`<div class="p-4 flex flex-wrap items-center gap-3">
+      <span class="text-sm font-semibold text-slate-700 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4 text-blue-600"></i>Período</span>
+      ${S.periodos.length?`<select onchange="selectPeriodo(this.value)" class="px-3 py-2 border border-slate-200 rounded text-sm">${opts}</select>`:'<span class="text-sm text-slate-400">nenhum período criado</span>'}
+      <span class="text-slate-300">|</span>
+      <span class="text-xs text-slate-500">Novo:</span>
+      <select id="np_ciclo" class="px-2 py-2 border border-slate-200 rounded text-sm">${S.ciclos.map(c=>`<option value="${c.id}">${c.nome}</option>`).join('')}</select>
+      <input id="np_mes" type="number" min="1" max="12" value="${new Date().getMonth()+1}" class="w-16 px-2 py-2 border border-slate-200 rounded text-sm" title="mês">
+      <input id="np_ano" type="number" value="${anoAtual}" class="w-24 px-2 py-2 border border-slate-200 rounded text-sm" title="ano">
+      <button onclick="criarPeriodo()" class="px-3 py-2 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 flex items-center gap-1"><i data-feather="plus" class="w-4 h-4"></i>Criar período</button>
+    </div>`,'mb-4');
+}
+
+window._viewComissao = function(){
+  const header = pageHeader('Cálculo da Comissão Quinzenal','Cascata da taxa, rateio por setor, repique e holerite — dados reais');
+  if(!S.periodoAtual){
+    return header + seletorPeriodo() + card(`<div class="p-12 text-center text-slate-400"><i data-feather="calendar" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Crie um período (acima) para calcular a comissão.</p></div>`);
+  }
+  const c=calcComissao(); const p=S.periodoAtual;
+  const inp=(lb,val,onch,suf='')=>`<div><label class="text-xs font-medium text-slate-500 block mb-1">${lb}</label><div class="flex items-center gap-1"><input type="number" step="0.01" value="${val}" onchange="${onch}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm text-right">${suf?`<span class="text-slate-400 text-sm">${suf}</span>`:''}</div></div>`;
+  return header + seletorPeriodo()
+  + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="trending-down" class="w-4 h-4 text-blue-600"></i>Premissas — ${p.ciclos_pagamento?.nome||''} (${fmtData(new Date(p.data_inicio+'T00:00:00'))} a ${fmtData(new Date(p.data_fim+'T00:00:00'))}, ${c.dias} dias)</h3>
+      <div class="grid grid-cols-4 gap-4 mb-4">
+        ${inp('Taxa de Serviço Total (R$)', c.taxaTotal, "salvarCampoPeriodo('taxa_servico_total',+this.value).then(()=>render())")}
+        ${inp('Retenção da casa', c.retPct, "salvarCampoPeriodo('retencao_pct',+this.value).then(()=>render())",'%')}
+        <div><label class="text-xs font-medium text-slate-500 block mb-1">Gasto com extras (R$)</label><div class="w-full px-3 py-2 border border-slate-200 bg-slate-50 rounded text-sm text-right">${money(c.extrasDesc)}</div><p class="text-[10px] text-slate-400 mt-1">${num(S.config.desc_extras_pct,0)}% de ${money(c.extrasTotal)}</p></div>
+        <div><label class="text-xs font-medium text-slate-500 block mb-1">Dias do período</label><div class="w-full px-3 py-2 border border-slate-200 bg-slate-50 rounded text-sm text-right">${c.dias}</div></div>
+      </div>
+      <div class="grid grid-cols-3 gap-4">
+        <div class="p-3 bg-slate-50 rounded"><p class="text-xs text-slate-500">Retenção</p><p class="font-bold text-slate-700">${money(c.retencao)}</p></div>
+        <div class="p-3 bg-blue-50 rounded"><p class="text-xs text-slate-500">Taxa Distribuída</p><p class="font-bold text-blue-700">${money(c.distribuida)}</p></div>
+        <div class="p-3 bg-green-50 rounded"><p class="text-xs text-slate-500">Total em comissões</p><p class="font-bold text-green-700">${money(c.totalComissao)}</p></div>
+      </div></div>`,'mb-4')
+  + card(`<div class="p-6"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="hash" class="w-4 h-4 text-blue-600"></i>R$ por ponto, por setor</h3>
+      <div class="grid grid-cols-7 gap-2 text-center text-sm">${S.setores.map(s=>`<div class="p-2 bg-slate-50 rounded"><p class="text-xs text-slate-500">${s.nome}</p><p class="font-bold text-slate-800">${money(c.rsPonto[s.nome])}</p></div>`).join('')}</div></div>`,'mb-4')
+  + `<div class="flex justify-end gap-2 mb-3">
+       <button onclick="exportComissaoCSV()" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>Exportar CSV</button>
+       <button onclick="salvarResultadoComissao()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="save" class="w-4 h-4"></i>Salvar fechamento</button>
+     </div>`
+  + card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr>
+      <th class="px-3 py-3 text-left">Funcionário</th><th class="px-2 py-3 text-left">Setor</th>
+      <th class="px-2 py-3 text-center">Base</th><th class="px-2 py-3 text-center">Qual.</th><th class="px-2 py-3 text-center">Desc.</th><th class="px-2 py-3 text-center">Finais</th>
+      <th class="px-2 py-3 text-right">Comissão</th><th class="px-2 py-3 text-right">Repique</th><th class="px-2 py-3 text-right bg-blue-50">Com.Total</th>
+      <th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Mín.Gar.</th><th class="px-3 py-3 text-right bg-green-50">TOTAL</th>
+      <th class="px-2 py-3 text-right bg-indigo-50">Dentro</th><th class="px-2 py-3 text-right bg-indigo-50">Fora</th></tr></thead><tbody>
+      ${c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+        <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${r.f.nome.split(' ').slice(0,2).join(' ')}</td>
+        <td class="px-2 py-2">${setorBadge(r.setor)}</td>
+        <td class="px-2 py-2 text-center">${num(r.base,2)}</td><td class="px-2 py-2 text-center">${num(r.Z,2)}</td>
+        <td class="px-2 py-2 text-center ${r.desc>0?'text-red-600 font-semibold':'text-slate-300'}">${r.desc>0?'−'+num(r.desc,2):'—'}</td>
+        <td class="px-2 py-2 text-center font-semibold">${num(r.finais,2)}</td>
+        <td class="px-2 py-2 text-right">${money(r.comissao)}</td>
+        <td class="px-2 py-2 text-right ${r.repique>0?'text-green-600':'text-slate-300'}">${r.repique>0?money(r.repique):'—'}</td>
+        <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comTotal)}</td>
+        <td class="px-2 py-2 text-right text-slate-600">${money(r.f.salario)}</td>
+        <td class="px-2 py-2 text-right ${r.minComp>0?'text-amber-600 font-semibold':'text-slate-300'}">${r.minComp>0?'+'+money(r.minComp):'—'}</td>
+        <td class="px-3 py-2 text-right font-bold text-green-700 bg-green-50/50">${money(r.total)}</td>
+        <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.pagoDentro)}</td>
+        <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.pagoFora)}</td>
+      </tr>`).join('')}
+      </tbody></table></div>
+      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Descontos de ponto e ranking entram quando as telas de Ponto e Ranking forem preenchidas. Hoje sem faltas lançadas = todos com pontos cheios.</div>`);
+};
+
+window.exportComissaoCSV = function(){
+  const c=calcComissao(); if(!c) return; const sep=';';
+  const head=['Funcionário','Setor','Pontos Base','Pontos Qualificados','Pontos Descontados','Pontos Finais','Comissão','Repique','Comissão Total','Salário','Benefícios','Mínimo Complemento','TOTAL','Pago Dentro','Pago Fora'];
+  const br=v=>typeof v==='number'?v.toFixed(2).replace('.',','):'"'+String(v).replace(/"/g,'""')+'"';
+  const linhas=c.rows.map(r=>[r.f.nome,r.setor,r.base,r.Z,r.desc,r.finais,r.comissao,r.repique,r.comTotal,r.f.salario,r.f.beneficios||0,r.minComp,r.total,r.pagoDentro,r.pagoFora].map(br).join(sep));
+  const csv='﻿'+[head.join(sep),...linhas].join('\r\n');
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));
+  a.download='comissao-'+(S.periodoAtual?.ciclos_pagamento?.nome||'periodo')+'.csv'; a.click(); URL.revokeObjectURL(a.href);
+};
+
+window.salvarResultadoComissao = async function(){
+  const c=calcComissao(); const p=S.periodoAtual; if(!c||!p) return;
+  await sb.from('comissao_resultado').delete().eq('periodo_id',p.id);
+  const recs=c.rows.map(r=>({ funcionario_id:r.f.id, periodo_id:p.id, setor:r.setor,
+    pontos_base:r.base, pontos_qualificados:r.Z, pontos_descontados:r.desc, pontos_finais:r.finais,
+    comissao:r.comissao, repique:r.repique, ranking_bonus:r.ranking, comissao_total:r.comTotal,
+    salario:r.f.salario, beneficios:r.f.beneficios||0, minimo_complemento:r.minComp, total:r.total,
+    pago_dentro:r.pagoDentro, pago_fora:r.pagoFora }));
+  const { error }=await sb.from('comissao_resultado').insert(recs);
+  if(error){ alert('Erro ao salvar: '+error.message); return; }
+  // registra/atualiza pagamento (Previsto)
+  await sb.from('pagamentos').delete().eq('periodo_id',p.id);
+  await sb.from('pagamentos').insert({ restaurante_id:S.restaurante.id, periodo_id:p.id, ciclo:p.ciclos_pagamento?.nome,
+    data_pagamento:p.data_pagamento, apuracao:`${fmtDM(new Date(p.data_inicio+'T00:00:00'))}–${fmtDM(new Date(p.data_fim+'T00:00:00'))}`,
+    colaboradores:c.rows.length, total_comissao:c.totalComissao, total_folha:c.totalFolha, status:'Previsto' });
+  alert('Fechamento salvo: '+c.rows.length+' colaboradores · folha '+money(c.totalFolha));
 };
 </script>
 </body>
