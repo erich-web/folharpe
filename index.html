@@ -32,7 +32,7 @@ const S = {
   session:null, perfil:null,
   restaurante:null, config:null,
   setores:[], cargos:[], funcionarios:[], rateio:[], ranking:[], ciclos:[],
-  periodos:[], periodoAtual:null, ponto:[], extras:[],
+  periodos:[], periodoAtual:null, ponto:[], extras:[], rankingPeriodo:[], pagamentos:[],
   loading:false, erro:null,
 };
 let current='dashboard';
@@ -102,7 +102,7 @@ async function carregarDados(){
     const r = await sb.from('restaurantes').select('*').order('id').limit(1).single();
     S.restaurante = r.data;
     const rid = S.restaurante?.id;
-    const [cfg, set, car, fun, rat, rank, cic, per, ext] = await Promise.all([
+    const [cfg, set, car, fun, rat, rank, cic, per, ext, pag] = await Promise.all([
       sb.from('config_remuneracao').select('*').eq('restaurante_id',rid).single(),
       sb.from('setores').select('*').eq('restaurante_id',rid).order('ordem'),
       sb.from('cargos').select('*, setores(nome)').eq('restaurante_id',rid).order('pontos',{ascending:false}),
@@ -112,10 +112,11 @@ async function carregarDados(){
       sb.from('ciclos_pagamento').select('*').eq('restaurante_id',rid).order('ordem'),
       sb.from('periodos').select('*, ciclos_pagamento(nome)').eq('restaurante_id',rid).order('data_inicio',{ascending:false}),
       sb.from('extras').select('*, setores(nome)').eq('restaurante_id',rid).order('data'),
+      sb.from('pagamentos').select('*, periodos(data_inicio,data_fim,ano)').eq('restaurante_id',rid).order('data_pagamento',{ascending:false}),
     ]);
     S.config=cfg.data; S.setores=set.data||[]; S.cargos=car.data||[]; S.funcionarios=fun.data||[];
     S.rateio=rat.data||[]; S.ranking=rank.data||[]; S.ciclos=cic.data||[];
-    S.periodos=per.data||[]; S.extras=ext.data||[];
+    S.periodos=per.data||[]; S.extras=ext.data||[]; S.pagamentos=pag.data||[];
     if(!S.periodoAtual && S.periodos.length) S.periodoAtual=S.periodos[0];
     if(S.periodoAtual) S.periodoAtual=S.periodos.find(p=>p.id===S.periodoAtual.id)||S.periodos[0]||null;
     await carregarPonto();
@@ -124,9 +125,12 @@ async function carregarDados(){
   S.loading=false;
 }
 async function carregarPonto(){
-  if(!S.periodoAtual){ S.ponto=[]; return; }
-  const { data } = await sb.from('controle_ponto').select('*').eq('periodo_id',S.periodoAtual.id);
-  S.ponto=data||[];
+  if(!S.periodoAtual){ S.ponto=[]; S.rankingPeriodo=[]; return; }
+  const [pt, rp] = await Promise.all([
+    sb.from('controle_ponto').select('*').eq('periodo_id',S.periodoAtual.id),
+    sb.from('ranking_periodo').select('*').eq('periodo_id',S.periodoAtual.id),
+  ]);
+  S.ponto=pt.data||[]; S.rankingPeriodo=rp.data||[];
 }
 async function selectPeriodo(id){
   S.periodoAtual=S.periodos.find(p=>p.id===+id)||null;
@@ -419,6 +423,8 @@ function calcComissao(){
   const distribuida=taxaTotal-retencao-extrasDesc;
   const ratePct={}; S.setores.forEach(s=>{const r=S.rateio.find(x=>x.tipo==='setor'&&x.setor_id===s.id);ratePct[s.nome]=Number(r?.percentual||0);});
   const rankingPct=Number((S.rateio.find(x=>x.tipo==='ranking')||{}).percentual||0);
+  const rankBucket=distribuida*rankingPct/100;
+  const bonusByFunc={}; S.rankingPeriodo.forEach(rp=>{ const prem=S.ranking.find(x=>x.colocacao===rp.colocacao); if(prem) bonusByFunc[rp.funcionario_id]=rankBucket*Number(prem.percentual)/100; });
 
   const rows=S.funcionarios.map(f=>{
     const cg=f.cargos||{}; const base=Number(cg.pontos||0); const setor=cg.setores?.nome||'Outros';
@@ -437,7 +443,7 @@ function calcComissao(){
   rows.forEach(r=>{
     r.comissao=r.finais*rsPonto[r.setor];
     r.repique=r.recebeRepique?r.finais*rsRep[r.setor]:0;
-    r.ranking=0; // atribuído na tela de Ranking (próxima etapa)
+    r.ranking=bonusByFunc[r.f.id]||0;
     r.comTotal=r.comissao+r.repique+r.ranking;
     const bruto=Number(r.f.salario)+r.comTotal+Number(r.f.beneficios||0);
     r.minComp=Math.max(0,Number(r.f.minimo_garantido||0)-bruto);
@@ -589,6 +595,124 @@ window.setPonto = async function(funcId, ds, status){
   }
   render();
 };
+</script>
+<script>
+/* ===================== EXTRAS (calendário + aprovação, grava no banco) ===================== */
+const MESES_F=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+const DOW3=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+let extrasMes={ano:new Date().getFullYear(), mes:new Date().getMonth()+1};
+function extrasDoDia(ds){ return S.extras.filter(e=>e.data===ds); }
+async function reloadExtras(){ const {data}=await sb.from('extras').select('*, setores(nome)').eq('restaurante_id',S.restaurante.id).order('data'); S.extras=data||[]; }
+window.mudarMesExtras=function(delta){ let m=extrasMes.mes+delta,a=extrasMes.ano; if(m<1){m=12;a--;} if(m>12){m=1;a++;} extrasMes={ano:a,mes:m}; render(); };
+window.addExtra=async function(){
+  const ds=val('ex_data'); if(!ds){ alert('Informe a data.'); return; }
+  const per=S.periodos.find(p=> ds>=p.data_inicio && ds<=p.data_fim);
+  const rec={ restaurante_id:S.restaurante.id, periodo_id:per?per.id:null, data:ds, setor_id:+val('ex_setor')||null,
+    funcao:val('ex_funcao')||'Extra', quantidade:+val('ex_qtd')||1, diaria:+val('ex_diaria')||0, lider:val('ex_lider')||'', status:'Aprovado' };
+  const { error }=await sb.from('extras').insert(rec); if(error){ alert('Erro: '+error.message); return; }
+  const d=new Date(ds+'T00:00:00'); extrasMes={ano:d.getFullYear(), mes:d.getMonth()+1};
+  await reloadExtras(); render();
+};
+window.setExtraStatus=async function(id,status){ await sb.from('extras').update({status}).eq('id',id); await reloadExtras(); render(); };
+window.excluirExtra=async function(id){ if(!confirm('Excluir este extra?'))return; await sb.from('extras').delete().eq('id',id); await reloadExtras(); render(); };
+
+window._viewExtras=function(){
+  const {ano,mes}=extrasMes; const pref=`${ano}-${String(mes).padStart(2,'0')}`;
+  const doMes=S.extras.filter(e=>e.data.startsWith(pref));
+  const aprov=doMes.filter(e=>e.status==='Aprovado'); const pend=doMes.filter(e=>e.status==='Pendente');
+  const totalQtd=aprov.reduce((a,e)=>a+e.quantidade,0); const custo=aprov.reduce((a,e)=>a+e.quantidade*Number(e.diaria),0);
+  const diasComExtra=new Set(aprov.map(e=>e.data)).size;
+  const kpis=[['EXTRAS CONTRATADOS',totalQtd,`em ${diasComExtra} dias`,'text-blue-600'],['CUSTO TOTAL',money(custo),'qtd × diária (aprovados)','text-slate-900'],['PENDENTES',pend.length,pend.length?'aguardando líder':'tudo aprovado',pend.length?'text-amber-600':'text-green-600'],['MÉDIA/DIA ATIVO',diasComExtra?(totalQtd/diasComExtra).toFixed(1):'0','extras/dia','text-slate-900']];
+  const first=new Date(ano,mes-1,1); const startDow=first.getDay(); const dim=new Date(ano,mes,0).getDate();
+  const cells=[]; for(let i=0;i<startDow;i++)cells.push(null); for(let d=1;d<=dim;d++)cells.push(d); while(cells.length%7)cells.push(null);
+  const qtdDia=d=>extrasDoDia(`${pref}-${String(d).padStart(2,'0')}`).filter(e=>e.status==='Aprovado').reduce((a,e)=>a+e.quantidade,0);
+  const maxQ=Math.max(1,...Array.from({length:dim},(_,i)=>qtdDia(i+1)));
+  const calendar=card(`<div class="p-5">
+      <div class="flex items-center justify-between mb-4"><h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4 text-blue-600"></i>${MESES_F[mes-1]} / ${ano}</h3>
+        <div class="flex gap-1"><button onclick="mudarMesExtras(-1)" class="p-2 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-left" class="w-4 h-4"></i></button><button onclick="mudarMesExtras(1)" class="p-2 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-right" class="w-4 h-4"></i></button></div></div>
+      <div class="grid grid-cols-7 gap-1.5 mb-1">${DOW3.map(d=>`<div class="text-center text-xs font-semibold ${['Dom','Sáb'].includes(d)?'text-blue-500':'text-slate-400'}">${d}</div>`).join('')}</div>
+      <div class="grid grid-cols-7 gap-1.5">${cells.map(d=>{ if(!d) return `<div class="h-20 rounded bg-slate-50/50"></div>`;
+        const ds=`${pref}-${String(d).padStart(2,'0')}`; const itens=extrasDoDia(ds); const q=qtdDia(d);
+        const cst=itens.filter(e=>e.status==='Aprovado').reduce((a,e)=>a+e.quantidade*Number(e.diaria),0);
+        const hasPend=itens.some(e=>e.status==='Pendente'); const ratio=q/maxQ; const claro=q&&ratio>0.33;
+        const bg=q===0?'bg-white':ratio>0.66?'bg-blue-600':ratio>0.33?'bg-blue-400':'bg-blue-100';
+        const tip=itens.length?`title="${itens.map(e=>e.quantidade+'× '+e.funcao+' ('+(e.setores?.nome||'')+') — '+e.status).join('\\n').replace(/"/g,'')}"`:'';
+        return `<div ${tip} class="h-20 rounded border border-slate-200 p-1.5 flex flex-col ${bg} ${q?'cursor-help':''}">
+          <div class="flex justify-between items-start"><span class="text-xs font-semibold ${claro?'text-white':'text-slate-500'}">${d}</span>${hasPend?'<span class="w-2 h-2 rounded-full bg-amber-400"></span>':''}</div>
+          ${q?`<div class="mt-auto"><div class="${claro?'text-white':'text-blue-700'} text-lg font-bold leading-none">${q}</div><div class="text-[9px] ${claro?'text-blue-100':'text-slate-400'}">${money(cst)}</div></div>`:''}
+        </div>`;}).join('')}</div>
+      <p class="text-[11px] text-slate-400 mt-3">Cor = quantidade de extras. Ponto âmbar = há pendência. Passe o mouse para detalhes.</p></div>`);
+  const form=card(`<div class="p-5"><h3 class="font-bold text-slate-900 mb-1 flex items-center gap-2"><i data-feather="user-plus" class="w-4 h-4 text-blue-600"></i>Aprovar extra</h3>
+      <p class="text-xs text-slate-500 mb-4">Lançamento do líder ao contratar um extra.</p>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-slate-500 block mb-1">Data</label><input id="ex_data" type="date" value="${ano}-${String(mes).padStart(2,'0')}-15" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Setor</label><select id="ex_setor" class="w-full px-2 py-2 border border-slate-200 rounded text-sm">${S.setores.map(s=>`<option value="${s.id}">${s.nome}</option>`).join('')}</select></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Função</label><input id="ex_funcao" placeholder="Garçom Extra" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Quantidade</label><input id="ex_qtd" type="number" min="1" value="1" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Diária (R$)</label><input id="ex_diaria" type="number" value="120" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Líder</label><input id="ex_lider" placeholder="Nome do líder" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+      </div>
+      <button onclick="addExtra()" class="mt-4 w-full px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center justify-center gap-2"><i data-feather="check" class="w-4 h-4"></i>Registrar e aprovar</button></div>`);
+  const lista=card(`<div class="p-5"><h3 class="font-bold text-slate-900 mb-4 flex items-center gap-2"><i data-feather="list" class="w-4 h-4 text-blue-600"></i>Extras do mês</h3>
+      <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-2 py-2 text-left">Data</th><th class="px-2 py-2 text-left">Setor</th><th class="px-2 py-2 text-left">Função</th><th class="px-2 py-2 text-center">Qtd</th><th class="px-2 py-2 text-right">Diária</th><th class="px-2 py-2 text-right">Total</th><th class="px-2 py-2 text-left">Líder</th><th class="px-2 py-2 text-center">Status</th><th class="px-2 py-2"></th></tr></thead><tbody>
+      ${doMes.slice().sort((a,b)=>a.data.localeCompare(b.data)).map(e=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+        <td class="px-2 py-1.5 font-medium">${e.data.slice(8,10)}/${e.data.slice(5,7)}</td><td class="px-2 py-1.5">${setorBadge(e.setores?.nome)}</td><td class="px-2 py-1.5 text-slate-600">${e.funcao}</td>
+        <td class="px-2 py-1.5 text-center font-semibold">${e.quantidade}</td><td class="px-2 py-1.5 text-right text-slate-500">${money(e.diaria)}</td><td class="px-2 py-1.5 text-right font-semibold">${money(e.quantidade*Number(e.diaria))}</td><td class="px-2 py-1.5 text-slate-600">${e.lider||'—'}</td>
+        <td class="px-2 py-1.5 text-center">${e.status==='Aprovado'?'<span class="badge bg-green-100 text-green-700">Aprovado</span>':`<button onclick="setExtraStatus(${e.id},'Aprovado')" class="badge bg-amber-100 text-amber-700 hover:bg-amber-200">Aprovar ✓</button>`}</td>
+        <td class="px-2 py-1.5 text-center"><button onclick="excluirExtra(${e.id})" class="text-red-400 hover:text-red-600"><i data-feather="trash-2" class="w-3.5 h-3.5"></i></button></td>
+      </tr>`).join('')||'<tr><td colspan="9" class="text-center text-slate-400 py-6">Nenhum extra neste mês.</td></tr>'}
+      </tbody></table></div>
+      <div class="mt-3 text-[11px] text-slate-500 flex items-center gap-2"><i data-feather="link" class="w-3.5 h-3.5"></i>Custo dos aprovados (${money(custo)}) alimenta "Gasto com extras" na Comissão.</div></div>`);
+  return pageHeader('Extras','Calendário de extras contratados — aprovados pelos líderes')
+    + `<div class="grid grid-cols-4 gap-4 mb-5">${kpis.map(k=>card(`<div class="p-5"><p class="text-xs text-slate-500 font-semibold mb-2">${k[0]}</p><p class="text-2xl font-bold ${k[3]}">${k[1]}</p><p class="text-xs text-slate-400 mt-2">${k[2]}</p></div>`)).join('')}</div>`
+    + `<div class="grid grid-cols-3 gap-4 mb-4"><div class="col-span-2">${calendar}</div><div>${form}</div></div>` + lista;
+};
+</script>
+<script>
+/* ===================== RANKING (atribui bônus por colocação) ===================== */
+window.setRankingColoc = async function(coloc, funcId){
+  const pid=S.periodoAtual.id;
+  if(!funcId){ await sb.from('ranking_periodo').delete().eq('periodo_id',pid).eq('colocacao',coloc); S.rankingPeriodo=S.rankingPeriodo.filter(r=>r.colocacao!==coloc); }
+  else { const ex=S.rankingPeriodo.find(r=>r.colocacao===coloc);
+    if(ex){ await sb.from('ranking_periodo').update({funcionario_id:+funcId}).eq('id',ex.id); ex.funcionario_id=+funcId; }
+    else { const {data}=await sb.from('ranking_periodo').insert({periodo_id:pid,colocacao:coloc,funcionario_id:+funcId}).select().single(); if(data)S.rankingPeriodo.push(data); } }
+  render();
+};
+window._viewRanking = function(){
+  const header=pageHeader('Ranking de Vendedores','Premiação por colocação — bônus calculado sobre a fatia de ranking');
+  if(!S.periodoAtual) return header + seletorPeriodo() + card(`<div class="p-12 text-center text-slate-400"><i data-feather="award" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Selecione um período.</p></div>`);
+  const c=calcComissao(); const bucket=c.bucketRanking;
+  const selSel=(coloc)=>{ const cur=(S.rankingPeriodo.find(r=>r.colocacao===coloc)||{}).funcionario_id||'';
+    return `<select onchange="setRankingColoc(${coloc},this.value)" class="px-2 py-1 border border-slate-200 rounded text-sm w-64"><option value="">— escolher vendedor —</option>${S.funcionarios.map(f=>`<option value="${f.id}" ${f.id===cur?'selected':''}>${f.nome}</option>`).join('')}</select>`; };
+  return header + seletorPeriodo()
+  + card(`<div class="p-6"><div class="flex items-center justify-between mb-4"><h3 class="font-bold flex items-center gap-2"><i data-feather="award" class="w-4 h-4 text-amber-600"></i>Colocações</h3><div class="text-sm text-slate-500">Bolo do ranking: <strong class="text-slate-800">${money(bucket)}</strong></div></div>
+      <table class="w-full text-sm"><thead class="text-slate-500 text-xs border-b border-slate-200"><tr><th class="text-left py-2 w-16">Posição</th><th class="text-left">Vendedor</th><th class="text-center w-20">%</th><th class="text-right w-32">Bônus</th></tr></thead><tbody>
+      ${S.ranking.map(r=>`<tr class="border-b border-slate-100"><td class="py-2 font-bold text-slate-400">${r.colocacao}º</td><td class="py-2">${selSel(r.colocacao)}</td><td class="py-2 text-center text-slate-600">${num(r.percentual,0)}%</td><td class="py-2 text-right font-semibold text-amber-600">${money(bucket*Number(r.percentual)/100)}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="text-[11px] text-slate-400 mt-3">Escolha o vendedor de cada posição (extraído do TOTVS). O bônus entra automaticamente na Comissão Total da pessoa.</p></div>`);
+};
+
+/* ===================== RELATÓRIOS (histórico de pagamentos) ===================== */
+window._viewRelatorios = function(){
+  const pagos=S.pagamentos.filter(h=>h.status==='Pago');
+  const totalFolha=pagos.reduce((a,h)=>a+Number(h.total_folha||0),0);
+  const comTotal=pagos.reduce((a,h)=>a+Number(h.total_comissao||0),0);
+  const prev=S.pagamentos.find(h=>h.status==='Previsto');
+  const kpis=[['PAGAMENTOS REGISTRADOS',S.pagamentos.length,'no histórico','text-slate-900'],['TOTAL PAGO (FOLHA)',money(totalFolha),'pagamentos concluídos','text-slate-900'],['EM COMISSÕES',money(comTotal),'distribuído','text-green-600'],['PRÓXIMO/PREVISTO',prev?fmtData(new Date(prev.data_pagamento+'T00:00:00')):'—','aguardando','text-blue-600']];
+  return pageHeader('Relatórios','Histórico de fechamentos e pagamentos')
+    + `<div class="grid grid-cols-4 gap-4 mb-5">${kpis.map(k=>card(`<div class="p-5"><p class="text-xs text-slate-500 font-semibold mb-2">${k[0]}</p><p class="text-2xl font-bold ${k[3]}">${k[1]}</p><p class="text-xs text-slate-400 mt-2">${k[2]}</p></div>`)).join('')}</div>`
+    + card(`<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr><th class="px-4 py-3 text-left">Data Pagamento</th><th class="px-4 py-3 text-left">Ciclo</th><th class="px-4 py-3 text-left">Apuração</th><th class="px-4 py-3 text-center">Colab.</th><th class="px-4 py-3 text-right">Comissões</th><th class="px-4 py-3 text-right">Folha Total</th><th class="px-4 py-3 text-center">Status</th><th class="px-4 py-3 text-center">Ação</th></tr></thead><tbody>
+      ${S.pagamentos.map(h=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+        <td class="px-4 py-3 font-medium">${h.data_pagamento?fmtData(new Date(h.data_pagamento+'T00:00:00')):'—'}</td>
+        <td class="px-4 py-3 text-slate-600">${h.ciclo||'—'}</td><td class="px-4 py-3 text-slate-600">${h.apuracao||'—'}</td>
+        <td class="px-4 py-3 text-center">${h.colaboradores||'—'}</td>
+        <td class="px-4 py-3 text-right">${money(h.total_comissao)}</td><td class="px-4 py-3 text-right font-semibold">${money(h.total_folha)}</td>
+        <td class="px-4 py-3 text-center">${h.status==='Pago'?'<span class="badge bg-green-100 text-green-700">Pago</span>':`<button onclick="marcarPago(${h.id})" class="badge bg-amber-100 text-amber-700 hover:bg-amber-200">Marcar pago</button>`}</td>
+        <td class="px-4 py-3 text-center"><button onclick="go('comissao')" class="text-blue-600 hover:underline text-xs">Abrir</button></td>
+      </tr>`).join('')||'<tr><td colspan="8" class="text-center text-slate-400 py-8">Nenhum fechamento salvo ainda. Salve um na Comissão Quinzenal.</td></tr>'}
+      </tbody></table></div>`);
+};
+window.marcarPago = async function(id){ await sb.from('pagamentos').update({status:'Pago',fechado_em:new Date().toISOString()}).eq('id',id); await carregarDados(); render(); };
 </script>
 </body>
 </html>
