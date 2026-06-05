@@ -544,5 +544,51 @@ window.salvarResultadoComissao = async function(){
   alert('Fechamento salvo: '+c.rows.length+' colaboradores · folha '+money(c.totalFolha));
 };
 </script>
+<script>
+/* ===================== FOLHA DE PONTO (grade editável, grava no banco) ===================== */
+const ST_PONTO=['Normal','Falta','Atraso','Dobra','Folga','Advertência','Atestado','Extra','Férias','Afastamento'];
+const ST_AB={'Normal':['N','text-green-700'],'Falta':['F','bg-red-100 text-red-700 font-bold'],'Atraso':['A','bg-orange-100 text-orange-700 font-bold'],'Dobra':['D','bg-purple-100 text-purple-700 font-bold'],'Folga':['Fg','text-slate-400'],'Advertência':['Ad','bg-rose-100 text-rose-700 font-bold'],'Atestado':['At','bg-amber-100 text-amber-700'],'Extra':['E','bg-blue-100 text-blue-700 font-bold'],'Férias':['Fé','bg-teal-100 text-teal-700'],'Afastamento':['Af','bg-slate-200 text-slate-600']};
+const DOW1=['D','S','T','Q','Q','S','S'];
+function diasDoPeriodo(p){ const out=[]; let d=new Date(p.data_inicio+'T00:00:00'); const fim=new Date(p.data_fim+'T00:00:00'); let g=0; while(d<=fim && g<40){ out.push(new Date(d)); d.setDate(d.getDate()+1); g++; } return out; }
+function statusDe(funcId, ds){ const r=S.ponto.find(p=>p.funcionario_id===funcId && p.data===ds); return r?r.status:'Normal'; }
+
+window._viewPonto = function(){
+  const header=pageHeader('Folha de Ponto','Grade da equipe por período — status dia a dia (grava no banco)');
+  if(!S.periodoAtual) return header + seletorPeriodo() + card(`<div class="p-12 text-center text-slate-400"><i data-feather="calendar" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Crie/selecione um período para lançar o ponto.</p></div>`);
+  const p=S.periodoAtual; const dias=diasDoPeriodo(p);
+  const opts=ST_PONTO.map(s=>`<option value="${s}">${s}</option>`).join('');
+  const head=`<tr><th class="px-3 py-2 text-left sticky left-0 bg-slate-50 z-10">Funcionário</th>${
+      dias.map(d=>`<th class="px-1 py-2 text-[10px] font-medium ${[0,6].includes(d.getDay())?'text-blue-500':'text-slate-500'}">${String(d.getDate()).padStart(2,'0')}<br>${DOW1[d.getDay()]}</th>`).join('')
+    }<th class="px-2 py-2 bg-slate-100">Falt</th><th class="px-2 py-2 bg-slate-100">Atr</th></tr>`;
+  const body=S.funcionarios.map(f=>{
+    let fal=0,atr=0;
+    const cells=dias.map(d=>{ const ds=ymdStr(d); const st=statusDe(f.id,ds); if(st==='Falta')fal++; if(st==='Atraso')atr++;
+      const [ab,cl]=ST_AB[st]||['?',''];
+      return `<td class="text-center p-0"><select onchange="setPonto(${f.id},'${ds}',this.value)" class="w-9 text-[11px] rounded border-0 bg-transparent text-center ${cl} cursor-pointer appearance-none" title="${st}">${ST_PONTO.map(s=>`<option value="${s}" ${s===st?'selected':''}>${ST_AB[s][0]}</option>`).join('')}</select></td>`;
+    }).join('');
+    return `<tr class="border-b border-slate-100 hover:bg-blue-50/30"><td class="px-3 py-1.5 font-medium text-slate-800 sticky left-0 bg-white whitespace-nowrap">${f.nome.split(' ').slice(0,2).join(' ')}</td>${cells}
+      <td class="text-center bg-slate-50 font-semibold ${fal?'text-red-600':'text-slate-300'}">${fal||'0'}</td>
+      <td class="text-center bg-slate-50 font-semibold ${atr?'text-orange-600':'text-slate-300'}">${atr||'0'}</td></tr>`;
+  }).join('');
+  return header + seletorPeriodo()
+  + card(`<div class="p-3 mb-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+      <div class="flex items-center gap-2 text-sm text-slate-700"><i data-feather="upload-cloud" class="w-4 h-4 text-blue-600"></i>Importação automática do cartão de ponto (Secullum PDF) — <span class="text-slate-500">em breve</span>. Por enquanto, lance/edite manualmente abaixo.</div>
+    </div>`,'border-0 bg-transparent p-0')
+  + card(`<div class="overflow-x-auto"><table class="w-full text-xs" style="border-collapse:collapse"><thead class="bg-slate-50 text-slate-600">${head}</thead><tbody>${body}</tbody></table></div>
+      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Mude a letra de cada dia: ${Object.entries(ST_AB).map(([k,[ab,cl]])=>`<span class="inline-block px-1 rounded ${cl}">${ab}</span>=${k}`).join(' · ')}. As alterações gravam na hora e já entram no cálculo da Comissão.</div>`);
+};
+window.setPonto = async function(funcId, ds, status){
+  const pid=S.periodoAtual.id;
+  if(status==='Normal'){
+    await sb.from('controle_ponto').delete().eq('funcionario_id',funcId).eq('periodo_id',pid).eq('data',ds);
+    S.ponto=S.ponto.filter(p=>!(p.funcionario_id===funcId&&p.data===ds));
+  } else {
+    const ex=S.ponto.find(p=>p.funcionario_id===funcId&&p.data===ds);
+    if(ex){ await sb.from('controle_ponto').update({status}).eq('id',ex.id); ex.status=status; }
+    else { const {data,error}=await sb.from('controle_ponto').insert({funcionario_id:funcId,periodo_id:pid,data:ds,status,origem:'manual'}).select().single(); if(!error&&data) S.ponto.push(data); }
+  }
+  render();
+};
+</script>
 </body>
 </html>
