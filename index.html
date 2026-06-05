@@ -160,11 +160,31 @@ let EXTRAS = [
 ];
 let extrasMes = {ano:2026, mes:5}; // calendário exibido (Maio/2026)
 
+// % do total de extras que é descontado da taxa de serviço
+let DESC_EXTRAS_PCT = 100;
+
+// Ciclos de pagamento (período de apuração + data de pagamento) — CONFIGURÁVEL
+// off = deslocamento de mês relativo ao mês do pagamento (-1 = mês anterior, 0 = mesmo mês)
+let CICLOS = [
+  { nome:'Adiantamento',     apurIniDia:10, apurIniOff:-1, apurFimDia:25, apurFimOff:-1, pagTipo:'util',  pagN:5  },
+  { nome:'Pagamento (saldo)', apurIniDia:26, apurIniOff:-1, apurFimDia:9,  apurFimOff:0,  pagTipo:'fixo',  pagDia:20 },
+];
+let DATA_REF = '2026-05-02'; // "hoje" / data de referência do fechamento
+
+// Histórico de pagamentos (Relatórios)
+let HISTORICO = [
+  {pagamento:'2026-04-07', ciclo:'Adiantamento',      apur:'10–25/mar',     colaboradores:52, comissao:68240.10, folha:198120.55, status:'Pago'},
+  {pagamento:'2026-04-20', ciclo:'Pagamento (saldo)', apur:'26/mar–09/abr', colaboradores:52, comissao:71880.00, folha:205430.20, status:'Pago'},
+  {pagamento:'2026-05-07', ciclo:'Adiantamento',      apur:'10–25/abr',     colaboradores:52, comissao:74173.40, folha:201540.80, status:'Previsto'},
+];
+
 /* ============================ MOTOR DE CÁLCULO ============================ */
 function calcular(){
   const P = PREMISSAS;
   const retencao = P.taxaTotal * P.retencaoPct/100;
-  const distribuida = P.taxaTotal - retencao - P.extras;
+  const extrasTotal = EXTRAS.filter(e=>e.status==='Aprovado').reduce((a,e)=>a+e.qtd*e.diaria,0);
+  const extrasDesc = extrasTotal * DESC_EXTRAS_PCT/100;       // % dos extras descontado da taxa
+  const distribuida = P.taxaTotal - retencao - extrasDesc;
 
   // 1) métricas por funcionário
   const rows = FUNC.map(f=>{
@@ -215,12 +235,31 @@ function calcular(){
     r.pagoFora = r.comFora;
   });
 
-  return {retencao, distribuida, rows, rsPonto, poolRepique, bucketRanking, bonusRanking,
+  return {retencao, extrasTotal, extrasDesc, distribuida, rows, rsPonto, poolRepique, bucketRanking, bonusRanking,
           totalComissao: rows.reduce((a,r)=>a+r.comTotal,0),
           totalFolha: rows.reduce((a,r)=>a+r.total,0)};
 }
 const money = v => 'R$ '+ (v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const num = (v,d=2) => (v||0).toLocaleString('pt-BR',{minimumFractionDigits:d,maximumFractionDigits:d});
+
+/* ---------- Datas / ciclos de pagamento ---------- */
+const MES_ABR=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+function stripT(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function fmtData(d){ return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; }
+function fmtDM(d){ return `${String(d.getDate()).padStart(2,'0')}/${MES_ABR[d.getMonth()]}`; }
+const DOWF=['domingo','segunda','terça','quarta','quinta','sexta','sábado'];
+function nthBusinessDay(ano, mes, n){ let d=new Date(ano,mes-1,1), c=0; while(c<n){ const w=d.getDay(); if(w!==0&&w!==6)c++; if(c<n) d.setDate(d.getDate()+1); } return d; }
+function dataPagamento(c, ano, mes){ return c.pagTipo==='util'?nthBusinessDay(ano,mes,c.pagN):new Date(ano,mes-1,c.pagDia); }
+function janelaApur(c, ano, mes){ return { ini:new Date(ano, mes-1+c.apurIniOff, c.apurIniDia), fim:new Date(ano, mes-1+c.apurFimOff, c.apurFimDia) }; }
+function descPagamento(c){ return c.pagTipo==='util'?`${c.pagN}º dia útil`:`dia ${c.pagDia}`; }
+function proximoPagamento(hoje){
+  const base=hoje.getFullYear()*12+hoje.getMonth(); const cands=[];
+  for(let k=-1;k<=4;k++){ const ym=base+k, ano=Math.floor(ym/12), mes=ym%12+1; CICLOS.forEach(c=>cands.push({c, dp:dataPagamento(c,ano,mes), jan:janelaApur(c,ano,mes)})); }
+  const h=stripT(hoje); return cands.filter(x=>stripT(x.dp)>=h).sort((a,b)=>a.dp-b.dp)[0];
+}
+function proxDataCiclo(c, hoje){ const base=hoje.getFullYear()*12+hoje.getMonth();
+  for(let k=0;k<=5;k++){ const ym=base+k, ano=Math.floor(ym/12), mes=ym%12+1; const dp=dataPagamento(c,ano,mes);
+    if(stripT(dp)>=stripT(hoje)) return {dp, jan:janelaApur(c,ano,mes)}; } return null; }
 
 /* ============================ NAVEGAÇÃO ============================ */
 const PAGES = [
@@ -231,6 +270,7 @@ const PAGES = [
   {id:'extras', label:'Extras', icon:'user-plus'},
   {id:'comissao', label:'Comissão Quinzenal', icon:'dollar-sign'},
   {id:'ranking', label:'Ranking', icon:'award'},
+  {id:'relatorios', label:'Relatórios', icon:'bar-chart-2'},
 ];
 let current='dashboard';
 function go(id){ current=id; render(); }
@@ -258,7 +298,30 @@ function viewDashboard(){
     {l:'FOLHA TOTAL', v:money(c.totalFolha), s:'Salário + comissão + benefícios', col:'text-slate-900'},
   ];
   const faltas = c.rows.filter(r=>r.falta>0);
-  return pageHeader('Dashboard','Visão geral do fechamento — 1ª Quinzena de Abril/2026')
+  // Próximo pagamento
+  const hoje=new Date(DATA_REF); const px=proximoPagamento(hoje);
+  const diasRest = px ? Math.round((stripT(px.dp)-stripT(hoje))/86400000) : 0;
+  const proximo = px ? card(`<div class="p-6 bg-gradient-to-br from-blue-600 to-blue-700 text-white">
+      <div class="flex items-start justify-between">
+        <div>
+          <p class="text-xs font-semibold text-blue-100 mb-1 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4"></i>PRÓXIMO PAGAMENTO · ${px.c.nome}</p>
+          <p class="text-3xl font-bold">${fmtData(px.dp)}</p>
+          <p class="text-sm text-blue-100 mt-1 capitalize">${DOWF[px.dp.getDay()]} · ${diasRest===0?'hoje':diasRest===1?'amanhã':'em '+diasRest+' dias'}</p>
+        </div>
+        <div class="text-right">
+          <p class="text-xs text-blue-100">Período de apuração</p>
+          <p class="text-lg font-bold">${fmtDM(px.jan.ini)} a ${fmtDM(px.jan.fim)}</p>
+          <p class="text-xs text-blue-100 mt-3">Comissão prevista</p>
+          <p class="text-lg font-bold">${money(c.totalComissao)}</p>
+        </div>
+      </div>
+      <div class="mt-4 pt-3 border-t border-blue-500/40 flex items-center justify-between text-xs text-blue-100">
+        <span>Dados atualizados até o fechamento</span>
+        <span class="flex items-center gap-1">Data de referência: <input type="date" value="${DATA_REF}" onchange="DATA_REF=this.value;render()" class="bg-blue-500/30 border border-blue-400/40 rounded px-2 py-0.5 text-white text-xs"></span>
+      </div>
+    </div>`,'mb-6 border-0 overflow-hidden') : '';
+  return pageHeader('Dashboard','Visão geral do fechamento e próximo pagamento')
+    + proximo
     + `<div class="grid grid-cols-4 gap-4 mb-6">${kpis.map(k=>card(`<div class="p-6"><p class="text-xs text-slate-500 font-semibold mb-2">${k.l}</p><p class="text-2xl font-bold ${k.col}">${k.v}</p><p class="text-xs text-slate-400 mt-2">${k.s}</p></div>`)).join('')}</div>`
     + `<div class="grid grid-cols-3 gap-4">`
     + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="pie-chart" class="w-4 h-4 text-blue-600"></i>Rateio por setor</h3>${
@@ -323,6 +386,36 @@ function viewConfig(){
       <div class="flex items-center justify-between"><span class="text-sm text-slate-600">Por FORA do holerite</span><div class="flex items-center gap-1"><input type="number" value="${HOLERITE.fora}" disabled class="w-20 px-2 py-1 border border-slate-100 bg-slate-50 rounded text-sm text-right"><span class="text-slate-400 text-sm">%</span></div></div>
     </div>`)
   + `</div>`
+  // Extras descontados da taxa
+  + `<div class="mt-4">`+card(`<div class="p-6"><h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="user-plus" class="w-4 h-4 text-blue-600"></i>Extras na taxa de serviço</h3>
+      <p class="text-xs text-slate-500 mb-4">% do total gasto com extras que é descontado da taxa de serviço antes da distribuição.</p>
+      <div class="flex items-center gap-3"><span class="text-sm text-slate-600">% dos extras descontado</span>
+        <input type="number" min="0" max="100" value="${DESC_EXTRAS_PCT}" onchange="DESC_EXTRAS_PCT=+this.value;render()" class="w-24 px-2 py-1 border border-slate-200 rounded text-sm text-right"><span class="text-slate-400 text-sm">%</span>
+        <span class="text-xs text-slate-400 ml-2">→ desconta ${money(EXTRAS.filter(e=>e.status==='Aprovado').reduce((a,e)=>a+e.qtd*e.diaria,0)*DESC_EXTRAS_PCT/100)} de ${money(EXTRAS.filter(e=>e.status==='Aprovado').reduce((a,e)=>a+e.qtd*e.diaria,0))} (extras aprovados)</span>
+      </div>
+    </div>`)+`</div>`
+  // Ciclos de pagamento
+  + `<div class="mt-4">`+card(`<div class="p-6"><h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="repeat" class="w-4 h-4 text-blue-600"></i>Ciclos de pagamento</h3>
+      <p class="text-xs text-slate-500 mb-4">Período de apuração e data de pagamento de cada folha (ex.: adiantamento no 5º dia útil referente ao dia 10–25 do mês anterior).</p>
+      <div class="space-y-3">${CICLOS.map((c,ci)=>{
+        const off=(v,on)=>`<select onchange="CICLOS[${ci}].${on}=+this.value;render()" class="px-1 py-1 border border-slate-200 rounded text-xs"><option value="-1" ${v===-1?'selected':''}>mês ant.</option><option value="0" ${v===0?'selected':''}>mês corr.</option></select>`;
+        const prox=proxDataCiclo(c, new Date(DATA_REF));
+        return `<div class="p-3 border border-slate-200 rounded-lg bg-slate-50/50">
+          <div class="grid grid-cols-12 gap-3 items-center">
+            <div class="col-span-3"><label class="text-[10px] text-slate-400 block">Nome do ciclo</label><input value="${c.nome}" onchange="CICLOS[${ci}].nome=this.value;render()" class="w-full px-2 py-1 border border-slate-200 rounded text-sm font-medium"></div>
+            <div class="col-span-5"><label class="text-[10px] text-slate-400 block">Período de apuração</label>
+              <div class="flex items-center gap-1 text-xs text-slate-600">dia <input type="number" value="${c.apurIniDia}" onchange="CICLOS[${ci}].apurIniDia=+this.value;render()" class="w-12 px-1 py-1 border border-slate-200 rounded text-right">${off(c.apurIniOff,'apurIniOff')} ao dia <input type="number" value="${c.apurFimDia}" onchange="CICLOS[${ci}].apurFimDia=+this.value;render()" class="w-12 px-1 py-1 border border-slate-200 rounded text-right">${off(c.apurFimOff,'apurFimOff')}</div>
+            </div>
+            <div class="col-span-4"><label class="text-[10px] text-slate-400 block">Data de pagamento</label>
+              <div class="flex items-center gap-1 text-xs text-slate-600">
+                <select onchange="CICLOS[${ci}].pagTipo=this.value;render()" class="px-1 py-1 border border-slate-200 rounded"><option value="util" ${c.pagTipo==='util'?'selected':''}>Nº dia útil</option><option value="fixo" ${c.pagTipo==='fixo'?'selected':''}>dia fixo</option></select>
+                ${c.pagTipo==='util'?`<input type="number" value="${c.pagN}" onchange="CICLOS[${ci}].pagN=+this.value;render()" class="w-12 px-1 py-1 border border-slate-200 rounded text-right"> º dia útil`:`dia <input type="number" value="${c.pagDia}" onchange="CICLOS[${ci}].pagDia=+this.value;render()" class="w-12 px-1 py-1 border border-slate-200 rounded text-right">`}
+              </div>
+            </div>
+          </div>
+          ${prox?`<div class="mt-2 text-[11px] text-slate-500">Próximo: <strong class="text-blue-700">${fmtData(prox.dp)}</strong> (apuração ${fmtDM(prox.jan.ini)} a ${fmtDM(prox.jan.fim)})</div>`:''}
+        </div>`;}).join('')}</div>
+    </div>`)+`</div>`
   // Tabela de cargos
   + `<div class="mt-4">`+card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="list" class="w-4 h-4 text-blue-600"></i>Tabela de cargos → pontos → setor <span class="text-xs font-normal text-slate-400">(qualquer cargo pode ir a qualquer setor)</span></h3>
       <div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-3 py-2 text-left">Cargo</th><th class="px-3 py-2 text-center">Pontos</th><th class="px-3 py-2 text-left">Setor</th></tr></thead><tbody>
@@ -574,7 +667,9 @@ function viewComissao(){
       <div class="grid grid-cols-4 gap-4 mb-4">
         ${inp('Taxa de Serviço Total (R$)', PREMISSAS.taxaTotal, 'PREMISSAS.taxaTotal=+this.value;render()')}
         ${inp('Retenção da casa', PREMISSAS.retencaoPct, 'PREMISSAS.retencaoPct=+this.value;render()','%')}
-        ${inp('Gasto com extras (R$)', PREMISSAS.extras, 'PREMISSAS.extras=+this.value;render()')}
+        <div><label class="text-xs font-medium text-slate-500 block mb-1">Gasto com extras (R$)</label>
+          <div class="w-full px-3 py-2 border border-slate-200 bg-slate-50 rounded text-sm text-right text-slate-700">${money(c.extrasDesc)}</div>
+          <p class="text-[10px] text-slate-400 mt-1">${DESC_EXTRAS_PCT}% de ${money(c.extrasTotal)} (extras aprovados) — config.</p></div>
         ${inp('Dias do período', PREMISSAS.diasPeriodo, 'PREMISSAS.diasPeriodo=+this.value;render()')}
       </div>
       <div class="grid grid-cols-3 gap-4">
@@ -638,6 +733,35 @@ function viewRanking(){
         </tbody></table>
       </div>
     </div></div>`);
+}
+
+function viewRelatorios(){
+  const pagos = HISTORICO.filter(h=>h.status==='Pago');
+  const totalAno = pagos.reduce((a,h)=>a+h.folha,0);
+  const comAno = pagos.reduce((a,h)=>a+h.comissao,0);
+  const kpis=[
+    ['PAGAMENTOS REALIZADOS', pagos.length, 'no histórico', 'text-slate-900'],
+    ['TOTAL PAGO (FOLHA)', money(totalAno), 'soma dos pagamentos', 'text-slate-900'],
+    ['TOTAL EM COMISSÕES', money(comAno), 'taxa de serviço distribuída', 'text-green-600'],
+    ['PRÓXIMO PREVISTO', (HISTORICO.find(h=>h.status==='Previsto')||{}).pagamento?fmtData(new Date((HISTORICO.find(h=>h.status==='Previsto')).pagamento)):'—', 'aguardando fechamento', 'text-blue-600'],
+  ];
+  return pageHeader('Relatórios','Histórico de pagamentos anteriores')
+    + `<div class="grid grid-cols-4 gap-4 mb-5">${kpis.map(k=>card(`<div class="p-5"><p class="text-xs text-slate-500 font-semibold mb-2">${k[0]}</p><p class="text-2xl font-bold ${k[3]}">${k[1]}</p><p class="text-xs text-slate-400 mt-2">${k[2]}</p></div>`)).join('')}</div>`
+    + card(`<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200">
+        <tr><th class="px-4 py-3 text-left">Data Pagamento</th><th class="px-4 py-3 text-left">Ciclo</th><th class="px-4 py-3 text-left">Apuração</th><th class="px-4 py-3 text-center">Colab.</th><th class="px-4 py-3 text-right">Comissões</th><th class="px-4 py-3 text-right">Folha Total</th><th class="px-4 py-3 text-center">Status</th><th class="px-4 py-3 text-center">Ações</th></tr>
+      </thead><tbody>
+      ${HISTORICO.slice().sort((a,b)=>b.pagamento.localeCompare(a.pagamento)).map(h=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+        <td class="px-4 py-3 font-medium text-slate-800">${fmtData(new Date(h.pagamento))}</td>
+        <td class="px-4 py-3 text-slate-600">${h.ciclo}</td>
+        <td class="px-4 py-3 text-slate-600">${h.apur}</td>
+        <td class="px-4 py-3 text-center">${h.colaboradores}</td>
+        <td class="px-4 py-3 text-right">${money(h.comissao)}</td>
+        <td class="px-4 py-3 text-right font-semibold">${money(h.folha)}</td>
+        <td class="px-4 py-3 text-center">${h.status==='Pago'?'<span class="badge bg-green-100 text-green-700">Pago</span>':'<span class="badge bg-amber-100 text-amber-700">Previsto</span>'}</td>
+        <td class="px-4 py-3 text-center"><button class="text-blue-600 hover:underline text-xs flex items-center gap-1 mx-auto"><i data-feather="download" class="w-3 h-3"></i>Baixar</button></td>
+      </tr>`).join('')}
+      </tbody></table></div>
+      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Cada pagamento guarda o fechamento daquele período (comissão, folha e colaboradores). No sistema real, "Baixar" exporta o relatório completo da folha.</div>`);
 }
 
 /* ============================ MODAL DE CADASTRO ============================ */
@@ -704,7 +828,7 @@ function exportarComissaoCSV(){
 /* ============================ RENDER ============================ */
 function render(){
   renderNav();
-  const v = {dashboard:viewDashboard,cadastro:viewCadastro,config:viewConfig,ponto:viewPonto,extras:viewExtras,comissao:viewComissao,ranking:viewRanking}[current];
+  const v = {dashboard:viewDashboard,cadastro:viewCadastro,config:viewConfig,ponto:viewPonto,extras:viewExtras,comissao:viewComissao,ranking:viewRanking,relatorios:viewRelatorios}[current];
   const el = document.getElementById('view');
   el.className = 'p-8 max-w-[1400px] mx-auto animate-fade';
   el.innerHTML = v();
