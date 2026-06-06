@@ -379,6 +379,8 @@ window._viewConfig = function(){
       ${f('Comissão por dentro do holerite', numInput('cf_dentro', cfg.holerite_dentro_pct,'%'))}
       ${f('% extras descontado da taxa', numInput('cf_descextras', cfg.desc_extras_pct,'%'))}
       ${f('Limite de HE/dia (h)', numInput('cf_he', cfg.limite_he_dia_horas,'h'))}
+      ${f('Horas-mês (base p/ valor-hora)', numInput('cf_horasmes', cfg.horas_mes_base??220,'h'))}
+      ${f('Adicional de HE', numInput('cf_adiche', cfg.adicional_he_pct??50,'%'))}
     </div>`)
   + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="pie-chart" class="w-4 h-4 text-blue-600"></i>Rateio por setor</h3>
       ${S.setores.map(s=>{const r=rateioSetor(s); return f(s.nome, numInput('cr_'+s.id, r?.percentual||0,'%'));}).join('')}
@@ -404,7 +406,8 @@ window.salvarConfig = async function(){
   const dentro=v('cf_dentro');
   const upd={ desconto_falta_pct:v('cf_falta'), desconto_atraso_pct:v('cf_atraso'), desconto_advertencia_pct:v('cf_adv'),
     valor_dobra:v('cf_dobra'), valor_extra_diaria:v('cf_extra'), retencao_casa_pct:v('cf_retencao'),
-    holerite_dentro_pct:dentro, holerite_fora_pct:100-dentro, desc_extras_pct:v('cf_descextras'), limite_he_dia_horas:v('cf_he'), updated_at:new Date().toISOString() };
+    holerite_dentro_pct:dentro, holerite_fora_pct:100-dentro, desc_extras_pct:v('cf_descextras'), limite_he_dia_horas:v('cf_he'),
+    horas_mes_base:v('cf_horasmes')||220, adicional_he_pct:v('cf_adiche'), updated_at:new Date().toISOString() };
   let e1=(await sb.from('config_remuneracao').update(upd).eq('id',S.config.id)).error;
   // rateio por setor
   for(const s of S.setores){ const r=S.rateio.find(x=>x.tipo==='setor'&&x.setor_id===s.id); const pct=v('cr_'+s.id);
@@ -450,7 +453,7 @@ function calcComissao(){
     let desc=Z*(falta*Number(cfg.desconto_falta_pct)/100 + atraso*Number(cfg.desconto_atraso_pct)/100 + adv*Number(cfg.desconto_advertencia_pct)/100);
     desc=Math.min(desc,Z);
     let finais=Z-desc; if(finais>0&&finais<0.1)finais=0.1; if(diasTrab===0)finais=0;
-    return {f,setor,base,falta,atraso,adv,Z,desc,finais,recebeRepique:desc<=0};
+    return {f,setor,base,falta,atraso,adv,Z,desc,finais,recebeRepique:desc<=0, heMin:bancoFunc(f.id).pagar};
   });
   const somaZ={},somaDesc={},somaFinQ={}; S.setores.forEach(s=>{somaZ[s.nome]=0;somaDesc[s.nome]=0;somaFinQ[s.nome]=0;});
   rows.forEach(r=>{somaZ[r.setor]+=r.Z;somaDesc[r.setor]+=r.desc;if(r.recebeRepique)somaFinQ[r.setor]+=r.finais;});
@@ -461,10 +464,13 @@ function calcComissao(){
     r.repique=r.recebeRepique?r.finais*rsRep[r.setor]:0;
     r.ranking=bonusByFunc[r.f.id]||0;
     r.comTotal=r.comissao+r.repique+r.ranking;
+    const horasMes=Number(cfg.horas_mes_base)||220;
+    const valorHora=horasMes>0?Number(r.f.salario)/horasMes:0;
+    r.hePagar=(r.heMin/60)*valorHora*(1+Number(cfg.adicional_he_pct||0)/100);
     const bruto=Number(r.f.salario)+r.comTotal+Number(r.f.beneficios||0);
     r.minComp=Math.max(0,Number(r.f.minimo_garantido||0)-bruto);
-    r.total=bruto+r.minComp;
-    r.pagoDentro=Number(r.f.salario)+Number(r.f.beneficios||0)+r.minComp+r.comTotal*Number(cfg.holerite_dentro_pct)/100;
+    r.total=bruto+r.minComp+r.hePagar;
+    r.pagoDentro=Number(r.f.salario)+Number(r.f.beneficios||0)+r.minComp+r.hePagar+r.comTotal*Number(cfg.holerite_dentro_pct)/100;
     r.pagoFora=r.comTotal*Number(cfg.holerite_fora_pct)/100;
   });
   return {dias,taxaTotal,retencao,retPct,extrasTotal,extrasDesc,distribuida,rows,rsPonto,
@@ -517,7 +523,7 @@ window._viewComissao = function(){
       <th class="px-3 py-3 text-left">Funcionário</th><th class="px-2 py-3 text-left">Setor</th>
       <th class="px-2 py-3 text-center">Base</th><th class="px-2 py-3 text-center">Qual.</th><th class="px-2 py-3 text-center">Desc.</th><th class="px-2 py-3 text-center">Finais</th>
       <th class="px-2 py-3 text-right">Comissão</th><th class="px-2 py-3 text-right">Repique</th><th class="px-2 py-3 text-right bg-blue-50">Com.Total</th>
-      <th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Mín.Gar.</th><th class="px-3 py-3 text-right bg-green-50">TOTAL</th>
+      <th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Mín.Gar.</th><th class="px-2 py-3 text-right">HE (R$)</th><th class="px-3 py-3 text-right bg-green-50">TOTAL</th>
       <th class="px-2 py-3 text-right bg-indigo-50">Dentro</th><th class="px-2 py-3 text-right bg-indigo-50">Fora</th></tr></thead><tbody>
       ${c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
         <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${r.f.nome.split(' ').slice(0,2).join(' ')}</td>
@@ -530,6 +536,7 @@ window._viewComissao = function(){
         <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comTotal)}</td>
         <td class="px-2 py-2 text-right text-slate-600">${money(r.f.salario)}</td>
         <td class="px-2 py-2 text-right ${r.minComp>0?'text-amber-600 font-semibold':'text-slate-300'}">${r.minComp>0?'+'+money(r.minComp):'—'}</td>
+        <td class="px-2 py-2 text-right ${r.hePagar>0?'text-red-600 font-semibold':'text-slate-300'}" title="${r.heMin?fmtMin(r.heMin)+' a pagar':''}">${r.hePagar>0?money(r.hePagar):'—'}</td>
         <td class="px-3 py-2 text-right font-bold text-green-700 bg-green-50/50">${money(r.total)}</td>
         <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.pagoDentro)}</td>
         <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.pagoFora)}</td>
@@ -540,9 +547,9 @@ window._viewComissao = function(){
 
 window.exportComissaoCSV = function(){
   const c=calcComissao(); if(!c) return; const sep=';';
-  const head=['Funcionário','Setor','Pontos Base','Pontos Qualificados','Pontos Descontados','Pontos Finais','Comissão','Repique','Comissão Total','Salário','Benefícios','Mínimo Complemento','TOTAL','Pago Dentro','Pago Fora'];
+  const head=['Funcionário','Setor','Pontos Base','Pontos Qualificados','Pontos Descontados','Pontos Finais','Comissão','Repique','Comissão Total','Salário','Benefícios','Mínimo Complemento','HE a pagar','TOTAL','Pago Dentro','Pago Fora'];
   const br=v=>typeof v==='number'?v.toFixed(2).replace('.',','):'"'+String(v).replace(/"/g,'""')+'"';
-  const linhas=c.rows.map(r=>[r.f.nome,r.setor,r.base,r.Z,r.desc,r.finais,r.comissao,r.repique,r.comTotal,r.f.salario,r.f.beneficios||0,r.minComp,r.total,r.pagoDentro,r.pagoFora].map(br).join(sep));
+  const linhas=c.rows.map(r=>[r.f.nome,r.setor,r.base,r.Z,r.desc,r.finais,r.comissao,r.repique,r.comTotal,r.f.salario,r.f.beneficios||0,r.minComp,r.hePagar,r.total,r.pagoDentro,r.pagoFora].map(br).join(sep));
   const csv='﻿'+[head.join(sep),...linhas].join('\r\n');
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));
   a.download='comissao-'+(S.periodoAtual?.ciclos_pagamento?.nome||'periodo')+'.csv'; a.click(); URL.revokeObjectURL(a.href);
@@ -555,7 +562,7 @@ window.salvarResultadoComissao = async function(){
     pontos_base:r.base, pontos_qualificados:r.Z, pontos_descontados:r.desc, pontos_finais:r.finais,
     comissao:r.comissao, repique:r.repique, ranking_bonus:r.ranking, comissao_total:r.comTotal,
     salario:r.f.salario, beneficios:r.f.beneficios||0, minimo_complemento:r.minComp, total:r.total,
-    pago_dentro:r.pagoDentro, pago_fora:r.pagoFora }));
+    pago_dentro:r.pagoDentro, pago_fora:r.pagoFora, he_pagar_minutos:r.heMin||0, he_pagar_valor:r.hePagar||0 }));
   const { error }=await sb.from('comissao_resultado').insert(recs);
   if(error){ alert('Erro ao salvar: '+error.message); return; }
   // registra/atualiza pagamento (Previsto)
