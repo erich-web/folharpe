@@ -7,6 +7,7 @@
 <title>Amauri — Comissão Pro</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/feather-icons/4.29.0/feather.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   *{scroll-behavior:smooth}
@@ -577,9 +578,12 @@ window._viewPonto = function(){
       <td class="text-center bg-slate-50 font-semibold ${atr?'text-orange-600':'text-slate-300'}">${atr||'0'}</td></tr>`;
   }).join('');
   return header + seletorPeriodo()
-  + card(`<div class="p-3 mb-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
-      <div class="flex items-center gap-2 text-sm text-slate-700"><i data-feather="upload-cloud" class="w-4 h-4 text-blue-600"></i>Importação automática do cartão de ponto (Secullum PDF) — <span class="text-slate-500">em breve</span>. Por enquanto, lance/edite manualmente abaixo.</div>
-    </div>`,'border-0 bg-transparent p-0')
+  + `<div class="p-4 mb-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+      <div class="flex items-center gap-3"><i data-feather="upload-cloud" class="w-5 h-5 text-blue-600"></i>
+        <div><p class="text-sm font-medium text-slate-900">Importar Cartão de Ponto (Secullum PDF)</p><p class="text-xs text-slate-600">O sistema lê as batidas e sugere a escala. Você revisa antes de aplicar.</p></div></div>
+      <label class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 cursor-pointer flex items-center gap-2"><i data-feather="upload-cloud" class="w-4 h-4"></i>Selecionar PDF<input type="file" accept="application/pdf" class="hidden" onchange="onSecullumFile(this)"></label>
+    </div>`
+  + (pontoImport ? viewImportPreview() : '')
   + card(`<div class="overflow-x-auto"><table class="w-full text-xs" style="border-collapse:collapse"><thead class="bg-slate-50 text-slate-600">${head}</thead><tbody>${body}</tbody></table></div>
       <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Mude a letra de cada dia: ${Object.entries(ST_AB).map(([k,[ab,cl]])=>`<span class="inline-block px-1 rounded ${cl}">${ab}</span>=${k}`).join(' · ')}. As alterações gravam na hora e já entram no cálculo da Comissão.</div>`);
 };
@@ -713,6 +717,113 @@ window._viewRelatorios = function(){
       </tbody></table></div>`);
 };
 window.marcarPago = async function(id){ await sb.from('pagamentos').update({status:'Pago',fechado_em:new Date().toISOString()}).eq('id',id); await carregarDados(); render(); };
+</script>
+<script>
+/* ===================== IMPORTAÇÃO CARTÃO SECULLUM (PDF via pdf.js) ===================== */
+let pontoImport=null;   // {funcId, funcNomePDF, dias:[...], periodoTxt}
+if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+function _tomin(t){ const [h,m]=t.split(':').map(Number); return h*60+m; }
+function extrairLinhasPDF(tc){
+  const ln={};
+  tc.items.forEach(it=>{ const y=Math.round(it.transform[5]); (ln[y]=ln[y]||[]).push(it); });
+  return Object.keys(ln).map(Number).sort((a,b)=>b-a)
+    .map(y=> ln[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(it=>it.str).join(' ').replace(/\s+/g,' ').trim())
+    .filter(Boolean).join('\n');
+}
+function parseSecullum(text){
+  const linhas=text.split('\n'); const dias=[]; let periodoTxt='';
+  linhas.forEach(l=>{
+    const mp=l.match(/Per[ií]odo:\s*(\d{2}\/\d{2}\/\d{4}).*?(\d{2}\/\d{2}\/\d{4})/i); if(mp) periodoTxt=mp[1]+' a '+mp[2];
+    const dm=l.match(/(\d{2})\/(\d{2})\/(\d{4})\s*-\s*(\S{3,4})\s+(.*)/);
+    if(!dm) return;
+    const dd=dm[1],mm=dm[2],yy=dm[3],wd=dm[4],rest=dm[5];
+    let full=null; const r=rest.trim();
+    if(/^Folga/i.test(r))full='Folga'; else if(/^Atestad/i.test(r))full='Atestado';
+    else if(/^F[ée]ria/i.test(r))full='Férias'; else if(/^Afasta/i.test(r))full='Afastamento'; else if(/^Falta/i.test(r))full='Falta';
+    const toks=(rest.match(/\d{2}:\d{2}/g)||[]); const punches=toks.slice(0,4);
+    const saldos=(rest.match(/[+\-]\d{2}:\d{2}/g)||[]);
+    let horas=0; for(let i=0;i+1<punches.length;i+=2){ let a=_tomin(punches[i]),b=_tomin(punches[i+1]); if(b<a)b+=1440; horas+=b-a; }
+    const status = full || (punches.length?'Normal':'Falta');
+    const turno = punches.length ? (_tomin(punches[0])<720?'Almoço':(_tomin(punches[0])>=840?'Jantar':'Misto')) : '';
+    const sld = saldos.length?saldos[saldos.length-1]:'';
+    const banco = sld ? (sld[0]==='-'?-1:1)*_tomin(sld.replace(/[+\-]/,'')) : 0;
+    dias.push({ data:`${yy}-${mm}-${dd}`, dataBR:`${dd}/${mm}`, wd, status,
+      ent:punches[0]||'', sai:punches.length>=2?punches[punches.length-1]:'', horas:+(horas/60).toFixed(2), turno, banco, sld });
+  });
+  return { dias, periodoTxt };
+}
+window.onSecullumFile = async function(input){
+  const file=input.files&&input.files[0]; if(!file) return; input.value='';
+  if(!window.pdfjsLib){ alert('Biblioteca de PDF não carregou. Recarregue a página e tente de novo.'); return; }
+  try{
+    const buf=await file.arrayBuffer();
+    const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+    let text='';
+    for(let i=1;i<=pdf.numPages;i++){ const pg=await pdf.getPage(i); text+=extrairLinhasPDF(await pg.getTextContent())+'\n'; }
+    const parsed=parseSecullum(text);
+    if(!parsed.dias.length){ alert('Não consegui identificar os dias no PDF. É um cartão Secullum?'); return; }
+    const up=text.toUpperCase();
+    const f=S.funcionarios.find(x=> up.includes((x.nome||'').toUpperCase().slice(0,18)));
+    pontoImport={ funcId:f?f.id:null, funcNomePDF:f?f.nome:'(não identificado)', dias:parsed.dias, periodoTxt:parsed.periodoTxt };
+    current='ponto'; render();
+  }catch(e){ alert('Erro ao ler o PDF: '+(e.message||e)); }
+};
+window.cancelarImport=function(){ pontoImport=null; render(); };
+window.setImportFunc=function(id){ pontoImport.funcId=+id||null; render(); };
+window.setImportStatus=function(i,st){ pontoImport.dias[i].status=st; render(); };
+
+function viewImportPreview(){
+  const p=S.periodoAtual, imp=pontoImport;
+  const dentro=imp.dias.filter(d=> p && d.data>=p.data_inicio && d.data<=p.data_fim);
+  const cnt={}; dentro.forEach(d=>cnt[d.status]=(cnt[d.status]||0)+1);
+  const chips=Object.entries(cnt).map(([k,v])=>`<span class="badge bg-slate-100 text-slate-700 mr-1">${k}: ${v}</span>`).join('');
+  const totalBanco=dentro.reduce((a,d)=>a+d.banco,0);
+  const bsg=totalBanco<0?'-':'+', ba=Math.abs(totalBanco);
+  return card(`<div class="p-5 mb-4 border-2 border-blue-200">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="file-text" class="w-4 h-4 text-blue-600"></i>Prévia da leitura ${imp.periodoTxt?`<span class="font-normal text-slate-400 text-sm">(${imp.periodoTxt})</span>`:''}</h3>
+        <button onclick="cancelarImport()" class="text-slate-400 hover:text-slate-700"><i data-feather="x" class="w-5 h-5"></i></button>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 mb-3 text-sm">
+        <span class="text-slate-500">Funcionário:</span>
+        <select onchange="setImportFunc(this.value)" class="px-2 py-1 border ${imp.funcId?'border-slate-200':'border-amber-300 bg-amber-50'} rounded text-sm"><option value="">— selecione —</option>${S.funcionarios.map(f=>`<option value="${f.id}" ${f.id===imp.funcId?'selected':''}>${f.nome}</option>`).join('')}</select>
+        ${imp.funcId?'':'<span class="text-amber-600 text-xs">não identifiquei pelo PDF — escolha manualmente</span>'}
+      </div>
+      <div class="mb-3 text-sm flex items-center gap-2 flex-wrap"><span class="text-slate-500">No período (${dentro.length} dias):</span> ${chips||'<span class="text-slate-400">nenhum dia do PDF cai no período</span>'} ${dentro.length?`<span class="badge bg-indigo-100 text-indigo-700">Banco: ${bsg}${String(Math.floor(ba/60)).padStart(2,'0')}:${String(ba%60).padStart(2,'0')}</span>`:''}</div>
+      <div class="overflow-x-auto max-h-72 overflow-y-auto border border-slate-100 rounded"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 sticky top-0"><tr><th class="px-2 py-1.5 text-left">Data</th><th class="px-2 py-1.5">Dia</th><th class="px-2 py-1.5">Entrada</th><th class="px-2 py-1.5">Saída</th><th class="px-2 py-1.5">Horas</th><th class="px-2 py-1.5">Turno</th><th class="px-2 py-1.5">Banco</th><th class="px-2 py-1.5 text-left">Status</th></tr></thead><tbody>
+        ${imp.dias.map((d,i)=>{ const noper = p && d.data>=p.data_inicio && d.data<=p.data_fim;
+          return `<tr class="border-b border-slate-100 ${noper?'':'opacity-40'}">
+            <td class="px-2 py-1 font-medium">${d.dataBR}</td><td class="px-2 py-1 text-center text-slate-500">${d.wd}</td>
+            <td class="px-2 py-1 text-center ${d.ent?'':'text-slate-300'}">${d.ent||'—'}</td><td class="px-2 py-1 text-center ${d.sai?'':'text-slate-300'}">${d.sai||'—'}</td>
+            <td class="px-2 py-1 text-center">${d.horas?d.horas.toFixed(2)+'h':'—'}</td><td class="px-2 py-1 text-center text-slate-500">${d.turno||'—'}</td>
+            <td class="px-2 py-1 text-center ${d.sld.startsWith('+')?'text-green-600':d.sld.startsWith('-')?'text-red-500':'text-slate-300'}">${d.sld||'—'}</td>
+            <td class="px-2 py-1"><select onchange="setImportStatus(${i},this.value)" class="px-1 py-0.5 border border-slate-200 rounded text-xs">${ST_PONTO.map(s=>`<option ${s===d.status?'selected':''}>${s}</option>`).join('')}</select></td>
+          </tr>`;}).join('')}
+      </tbody></table></div>
+      <div class="flex justify-end gap-2 mt-4">
+        <button onclick="cancelarImport()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Cancelar</button>
+        <button onclick="aplicarImport()" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700 flex items-center gap-2"><i data-feather="check" class="w-4 h-4"></i>Aplicar à grade (${dentro.length} dias)</button>
+      </div>
+      <p class="text-[11px] text-slate-400 mt-2">Só os dias dentro do período selecionado serão aplicados. Linhas esmaecidas estão fora do período.</p>
+    </div>`);
+}
+window.aplicarImport = async function(){
+  const imp=pontoImport, p=S.periodoAtual;
+  if(!imp.funcId){ alert('Escolha o funcionário.'); return; }
+  if(!p){ alert('Selecione um período.'); return; }
+  const dentro=imp.dias.filter(d=> d.data>=p.data_inicio && d.data<=p.data_fim);
+  if(!dentro.length){ alert('Nenhum dia do PDF cai no período selecionado.'); return; }
+  const fid=imp.funcId, nome=imp.funcNomePDF;
+  await sb.from('controle_ponto').delete().eq('funcionario_id',fid).eq('periodo_id',p.id);
+  const recs=dentro.map(d=>({ funcionario_id:fid, periodo_id:p.id, data:d.data, status:d.status,
+    horas_trabalhadas:d.horas||0, banco_minutos:d.banco||0, turno:d.turno||null,
+    entrada_1:d.ent||null, saida_1:d.sai||null, origem:'upload', validado:true }));
+  const { error }=await sb.from('controle_ponto').insert(recs);
+  if(error){ alert('Erro ao gravar: '+error.message); return; }
+  pontoImport=null; await carregarPonto(); render();
+  alert('Cartão importado: '+dentro.length+' dias aplicados.');
+};
 </script>
 </body>
 </html>
