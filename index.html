@@ -862,9 +862,38 @@ window.setPapel = async function(id, papel){
   if(id===S.session.user.id){ S.perfil.papel=papel; }
   render();
 };
+let novoUserOpen=false;
+window.toggleNovoUser=function(){ novoUserOpen=!novoUserOpen; render(); };
+window.criarUsuario=async function(btn){
+  const email=val('nu_email'), senha=val('nu_senha'), nome=val('nu_nome'), papel=val('nu_papel');
+  if(!email||!senha){ alert('Informe e-mail e senha (mín. 6 caracteres).'); return; }
+  try{
+    const { data:{ session } }=await sb.auth.getSession();
+    const resp=await fetch(`${SUPABASE_URL}/functions/v1/admin-criar-usuario`,{ method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${session.access_token}`, 'apikey':SUPABASE_KEY },
+      body:JSON.stringify({ email, password:senha, nome, papel }) });
+    const r=await resp.json();
+    if(!resp.ok || r.error){ alert('Erro: '+(r.error||('HTTP '+resp.status))); return; }
+    const us=await sb.from('profiles').select('*').order('email'); S.usuarios=us.data||[];
+    novoUserOpen=false; render(); alert('Usuário criado com sucesso.');
+  }catch(e){ alert('Erro: '+(e.message||e)); }
+};
 window._viewUsuarios = function(){
   const papeis=[['admin','Administrador'],['rh','RH'],['lider','Líder'],['viewer','Visualizador']];
-  return pageHeader('Usuários','Defina o papel de cada usuário (apenas administradores)')
+  const formNovo = novoUserOpen ? card(`<div class="p-5 mb-4 border-2 border-blue-200">
+      <h3 class="font-bold text-slate-900 mb-4 flex items-center gap-2"><i data-feather="user-plus" class="w-4 h-4 text-blue-600"></i>Novo usuário</h3>
+      <div class="grid grid-cols-4 gap-3">
+        <div><label class="text-xs text-slate-500 block mb-1">Nome</label><input id="nu_nome" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">E-mail</label><input id="nu_email" type="email" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Senha (mín. 6)</label><input id="nu_senha" type="text" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Papel</label><select id="nu_papel" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${papeis.map(([v,l])=>`<option value="${v}" ${v==='viewer'?'selected':''}>${l}</option>`).join('')}</select></div>
+      </div>
+      <div class="flex justify-end gap-2 mt-4"><button onclick="toggleNovoUser()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Cancelar</button><button onclick="criarUsuario(this)" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">Criar usuário</button></div>
+      <p class="text-[11px] text-slate-400 mt-2">O usuário já entra confirmado (sem precisar de e-mail). Ele faz login com o e-mail e a senha que você definiu.</p>
+    </div>`) : '';
+  return `<div class="flex justify-between items-start mb-2"><div>${pageHeader('Usuários','Defina o papel de cada usuário (apenas administradores)')}</div>
+      <button onclick="toggleNovoUser()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="plus" class="w-4 h-4"></i>Novo usuário</button></div>`
+  + formNovo
   + card(`<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-50 border-b border-slate-200 text-slate-600"><tr><th class="px-4 py-3 text-left">E-mail</th><th class="px-4 py-3 text-left">Nome</th><th class="px-4 py-3 text-left w-56">Papel</th></tr></thead><tbody>
       ${S.usuarios.map(u=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
         <td class="px-4 py-3 font-medium text-slate-800">${u.email||'—'}${u.id===S.session.user.id?' <span class="badge bg-slate-100 text-slate-500">você</span>':''}</td>
