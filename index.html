@@ -33,7 +33,7 @@ const S = {
   session:null, perfil:null,
   restaurante:null, config:null,
   setores:[], cargos:[], funcionarios:[], rateio:[], ranking:[], ciclos:[],
-  periodos:[], periodoAtual:null, ponto:[], extras:[], rankingPeriodo:[], pagamentos:[],
+  periodos:[], periodoAtual:null, ponto:[], extras:[], rankingPeriodo:[], pagamentos:[], usuarios:[],
   loading:false, erro:null,
 };
 let current='dashboard';
@@ -118,6 +118,8 @@ async function carregarDados(){
     S.config=cfg.data; S.setores=set.data||[]; S.cargos=car.data||[]; S.funcionarios=fun.data||[];
     S.rateio=rat.data||[]; S.ranking=rank.data||[]; S.ciclos=cic.data||[];
     S.periodos=per.data||[]; S.extras=ext.data||[]; S.pagamentos=pag.data||[];
+    const prof=await sb.from('profiles').select('*').eq('id',S.session.user.id).single(); S.perfil=prof.data;
+    if(S.perfil?.papel==='admin'){ const us=await sb.from('profiles').select('*').order('email'); S.usuarios=us.data||[]; }
     if(!S.periodoAtual && S.periodos.length) S.periodoAtual=S.periodos[0];
     if(S.periodoAtual) S.periodoAtual=S.periodos.find(p=>p.id===S.periodoAtual.id)||S.periodos[0]||null;
     await carregarPonto();
@@ -166,8 +168,18 @@ const PAGES=[
   {id:'comissao',label:'Comissão Quinzenal',icon:'dollar-sign'},
   {id:'ranking',label:'Ranking',icon:'award'},
   {id:'relatorios',label:'Relatórios',icon:'bar-chart-2'},
+  {id:'usuarios',label:'Usuários',icon:'shield'},
 ];
-function go(id){ current=id; render(); }
+const ACESSO={ admin:['dashboard','cadastro','config','ponto','extras','comissao','ranking','relatorios','usuarios'],
+  rh:['dashboard','cadastro','ponto','extras','comissao','ranking','relatorios'],
+  lider:['dashboard','ponto','extras','relatorios'],
+  viewer:['dashboard','comissao','relatorios'] };
+function papel(){ return S.perfil?.papel || 'viewer'; }
+function podeVer(id){ return (ACESSO[papel()]||ACESSO.viewer).includes(id); }
+function podeEscrever(area){ const p=papel(); if(p==='admin')return true; if(p==='viewer')return false;
+  if(area==='config')return false; if(p==='rh')return true; if(p==='lider')return area==='ponto'||area==='extras'; return false; }
+const LABEL_PAPEL={admin:'Administrador',rh:'RH',lider:'Líder',viewer:'Visualizador'};
+function go(id){ if(!podeVer(id))return; current=id; render(); }
 function val(id){ return (document.getElementById(id)||{}).value; }
 
 /* ===================== TELAS ===================== */
@@ -200,12 +212,13 @@ function appShell(content){
         <div class="w-10 h-10 bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg flex items-center justify-center"><span class="text-white font-bold text-lg">A</span></div>
         <div><h1 class="font-bold text-slate-900 leading-tight">${S.restaurante?.nome||'Amauri'}</h1><p class="text-xs text-slate-500">Comissão Pro</p></div>
       </div></div>
-      <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">${PAGES.map(p=>`
+      <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">${PAGES.filter(p=>podeVer(p.id)).map(p=>`
         <button onclick="go('${p.id}')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left text-slate-700 hover:bg-slate-100 transition ${current===p.id?'nav-active text-blue-700 font-semibold':''}">
           <i data-feather="${p.icon}" class="w-4 h-4"></i><span class="text-sm font-medium">${p.label}</span></button>`).join('')}
       </nav>
       <div class="p-4 border-t border-slate-200 text-xs text-slate-500">
         <p class="truncate">${S.session?.user?.email||''}</p>
+        <p class="mt-1"><span class="badge bg-blue-100 text-blue-700">${LABEL_PAPEL[papel()]||papel()}</span></p>
         <button onclick="sair()" class="mt-2 text-slate-500 hover:text-red-600 flex items-center gap-1"><i data-feather="log-out" class="w-3 h-3"></i> Sair</button>
       </div>
     </aside>
@@ -322,13 +335,15 @@ function render(){
   const root=document.getElementById('root');
   if(!S.session){ root.innerHTML=viewLogin(); document.getElementById('modalHost').innerHTML=''; feather.replace(); return; }
   if(S.loading && !S.restaurante){ root.innerHTML=`<div class="min-h-screen flex items-center justify-center text-slate-400">Carregando…</div>`; feather.replace(); return; }
+  if(!podeVer(current)) current='dashboard';
   const wv = id => window['_view'+id];
   const views={dashboard:viewDashboard,cadastro:viewCadastro,config:()=>viewConfig(),
     ponto:()=>(wv('Ponto')?wv('Ponto')():viewStub('Folha de Ponto')),
     extras:()=>(wv('Extras')?wv('Extras')():viewStub('Extras')),
     comissao:()=>(wv('Comissao')?wv('Comissao')():viewStub('Comissão Quinzenal')),
     ranking:()=>(wv('Ranking')?wv('Ranking')():viewStub('Ranking')),
-    relatorios:()=>(wv('Relatorios')?wv('Relatorios')():viewStub('Relatórios'))};
+    relatorios:()=>(wv('Relatorios')?wv('Relatorios')():viewStub('Relatórios')),
+    usuarios:()=>(wv('Usuarios')?wv('Usuarios')():viewStub('Usuários'))};
   const v=views[current]||viewDashboard;
   root.innerHTML=appShell(v());
   document.getElementById('modalHost').innerHTML=modalHTML();
@@ -463,12 +478,12 @@ function seletorPeriodo(){
   return card(`<div class="p-4 flex flex-wrap items-center gap-3">
       <span class="text-sm font-semibold text-slate-700 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4 text-blue-600"></i>Período</span>
       ${S.periodos.length?`<select onchange="selectPeriodo(this.value)" class="px-3 py-2 border border-slate-200 rounded text-sm">${opts}</select>`:'<span class="text-sm text-slate-400">nenhum período criado</span>'}
-      <span class="text-slate-300">|</span>
+      ${podeEscrever('comissao')?`<span class="text-slate-300">|</span>
       <span class="text-xs text-slate-500">Novo:</span>
       <select id="np_ciclo" class="px-2 py-2 border border-slate-200 rounded text-sm">${S.ciclos.map(c=>`<option value="${c.id}">${c.nome}</option>`).join('')}</select>
       <input id="np_mes" type="number" min="1" max="12" value="${new Date().getMonth()+1}" class="w-16 px-2 py-2 border border-slate-200 rounded text-sm" title="mês">
       <input id="np_ano" type="number" value="${anoAtual}" class="w-24 px-2 py-2 border border-slate-200 rounded text-sm" title="ano">
-      <button onclick="criarPeriodo()" class="px-3 py-2 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 flex items-center gap-1"><i data-feather="plus" class="w-4 h-4"></i>Criar período</button>
+      <button onclick="criarPeriodo()" class="px-3 py-2 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 flex items-center gap-1"><i data-feather="plus" class="w-4 h-4"></i>Criar período</button>`:''}
     </div>`,'mb-4');
 }
 
@@ -496,7 +511,7 @@ window._viewComissao = function(){
       <div class="grid grid-cols-7 gap-2 text-center text-sm">${S.setores.map(s=>`<div class="p-2 bg-slate-50 rounded"><p class="text-xs text-slate-500">${s.nome}</p><p class="font-bold text-slate-800">${money(c.rsPonto[s.nome])}</p></div>`).join('')}</div></div>`,'mb-4')
   + `<div class="flex justify-end gap-2 mb-3">
        <button onclick="exportComissaoCSV()" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>Exportar CSV</button>
-       <button onclick="salvarResultadoComissao()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="save" class="w-4 h-4"></i>Salvar fechamento</button>
+       ${podeEscrever('comissao')?`<button onclick="salvarResultadoComissao()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="save" class="w-4 h-4"></i>Salvar fechamento</button>`:''}
      </div>`
   + card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr>
       <th class="px-3 py-3 text-left">Funcionário</th><th class="px-2 py-3 text-left">Setor</th>
@@ -558,6 +573,14 @@ const ST_AB={'Normal':['N','text-green-700'],'Falta':['F','bg-red-100 text-red-7
 const DOW1=['D','S','T','Q','Q','S','S'];
 function diasDoPeriodo(p){ const out=[]; let d=new Date(p.data_inicio+'T00:00:00'); const fim=new Date(p.data_fim+'T00:00:00'); let g=0; while(d<=fim && g<40){ out.push(new Date(d)); d.setDate(d.getDate()+1); g++; } return out; }
 function statusDe(funcId, ds){ const r=S.ponto.find(p=>p.funcionario_id===funcId && p.data===ds); return r?r.status:'Normal'; }
+function fmtMin(min){ const s=min<0?'-':'+'; const a=Math.abs(Math.round(min)); return `${s}${String(Math.floor(a/60)).padStart(2,'0')}:${String(a%60).padStart(2,'0')}`; }
+function bancoFunc(funcId){
+  const limMin=(Number(S.config?.limite_he_dia_horas)||2)*60; let banco=0,pagar=0;
+  S.ponto.filter(p=>p.funcionario_id===funcId).forEach(p=>{ const min=Number(p.banco_minutos)||0;
+    if(min>limMin){ pagar+=min; } else { banco+=min; } });
+  return { banco, pagar };
+}
+window.salvarLimiteHE = async function(v){ const val=+v||0; await sb.from('config_remuneracao').update({limite_he_dia_horas:val}).eq('id',S.config.id); S.config.limite_he_dia_horas=val; render(); };
 
 window._viewPonto = function(){
   const header=pageHeader('Folha de Ponto','Grade da equipe por período — status dia a dia (grava no banco)');
@@ -566,18 +589,23 @@ window._viewPonto = function(){
   const opts=ST_PONTO.map(s=>`<option value="${s}">${s}</option>`).join('');
   const head=`<tr><th class="px-3 py-2 text-left sticky left-0 bg-slate-50 z-10">Funcionário</th>${
       dias.map(d=>`<th class="px-1 py-2 text-[10px] font-medium ${[0,6].includes(d.getDay())?'text-blue-500':'text-slate-500'}">${String(d.getDate()).padStart(2,'0')}<br>${DOW1[d.getDay()]}</th>`).join('')
-    }<th class="px-2 py-2 bg-slate-100">Falt</th><th class="px-2 py-2 bg-slate-100">Atr</th></tr>`;
+    }<th class="px-2 py-2 bg-slate-100">Falt</th><th class="px-2 py-2 bg-slate-100">Atr</th><th class="px-2 py-2 bg-slate-100">Banco</th><th class="px-2 py-2 bg-slate-100">HE pagar</th></tr>`;
   const body=S.funcionarios.map(f=>{
     let fal=0,atr=0;
     const cells=dias.map(d=>{ const ds=ymdStr(d); const st=statusDe(f.id,ds); if(st==='Falta')fal++; if(st==='Atraso')atr++;
       const [ab,cl]=ST_AB[st]||['?',''];
       return `<td class="text-center p-0"><select onchange="setPonto(${f.id},'${ds}',this.value)" class="w-9 text-[11px] rounded border-0 bg-transparent text-center ${cl} cursor-pointer appearance-none" title="${st}">${ST_PONTO.map(s=>`<option value="${s}" ${s===st?'selected':''}>${ST_AB[s][0]}</option>`).join('')}</select></td>`;
     }).join('');
+    const b=bancoFunc(f.id);
     return `<tr class="border-b border-slate-100 hover:bg-blue-50/30"><td class="px-3 py-1.5 font-medium text-slate-800 sticky left-0 bg-white whitespace-nowrap">${f.nome.split(' ').slice(0,2).join(' ')}</td>${cells}
       <td class="text-center bg-slate-50 font-semibold ${fal?'text-red-600':'text-slate-300'}">${fal||'0'}</td>
-      <td class="text-center bg-slate-50 font-semibold ${atr?'text-orange-600':'text-slate-300'}">${atr||'0'}</td></tr>`;
+      <td class="text-center bg-slate-50 font-semibold ${atr?'text-orange-600':'text-slate-300'}">${atr||'0'}</td>
+      <td class="text-center bg-slate-50 font-semibold ${b.banco?(b.banco>=0?'text-green-600':'text-red-600'):'text-slate-300'}">${b.banco?fmtMin(b.banco):'—'}</td>
+      <td class="text-center bg-slate-50 font-bold ${b.pagar>0?'text-red-600':'text-slate-300'}">${b.pagar>0?fmtMin(b.pagar):'—'}</td></tr>`;
   }).join('');
+  const limite=Number(S.config.limite_he_dia_horas)||2;
   return header + seletorPeriodo()
+  + `<div class="mb-3 flex items-center gap-2 text-sm text-slate-600"><i data-feather="clock" class="w-4 h-4 text-blue-600"></i>Horas extras: acima de <input type="number" step="0.5" min="0" value="${limite}" onchange="salvarLimiteHE(this.value)" class="w-16 px-2 py-1 border border-slate-200 rounded text-right">h/dia → <span class="badge bg-red-100 text-red-700">pagar</span>; até o limite → <span class="badge bg-green-100 text-green-700">banco</span>. <span class="text-slate-400 text-xs">(banco vem da importação do cartão)</span></div>`
   + `<div class="p-4 mb-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
       <div class="flex items-center gap-3"><i data-feather="upload-cloud" class="w-5 h-5 text-blue-600"></i>
         <div><p class="text-sm font-medium text-slate-900">Importar Cartão de Ponto (Secullum PDF)</p><p class="text-xs text-slate-600">O sistema lê as batidas e sugere a escala. Você revisa antes de aplicar.</p></div></div>
@@ -711,7 +739,7 @@ window._viewRelatorios = function(){
         <td class="px-4 py-3 text-slate-600">${h.ciclo||'—'}</td><td class="px-4 py-3 text-slate-600">${h.apuracao||'—'}</td>
         <td class="px-4 py-3 text-center">${h.colaboradores||'—'}</td>
         <td class="px-4 py-3 text-right">${money(h.total_comissao)}</td><td class="px-4 py-3 text-right font-semibold">${money(h.total_folha)}</td>
-        <td class="px-4 py-3 text-center">${h.status==='Pago'?'<span class="badge bg-green-100 text-green-700">Pago</span>':`<button onclick="marcarPago(${h.id})" class="badge bg-amber-100 text-amber-700 hover:bg-amber-200">Marcar pago</button>`}</td>
+        <td class="px-4 py-3 text-center">${h.status==='Pago'?'<span class="badge bg-green-100 text-green-700">Pago</span>':(podeEscrever('relatorios')?`<button onclick="marcarPago(${h.id})" class="badge bg-amber-100 text-amber-700 hover:bg-amber-200">Marcar pago</button>`:'<span class="badge bg-amber-100 text-amber-700">Previsto</span>')}</td>
         <td class="px-4 py-3 text-center"><button onclick="go('comissao')" class="text-blue-600 hover:underline text-xs">Abrir</button></td>
       </tr>`).join('')||'<tr><td colspan="8" class="text-center text-slate-400 py-8">Nenhum fechamento salvo ainda. Salve um na Comissão Quinzenal.</td></tr>'}
       </tbody></table></div>`);
@@ -823,6 +851,35 @@ window.aplicarImport = async function(){
   if(error){ alert('Erro ao gravar: '+error.message); return; }
   pontoImport=null; await carregarPonto(); render();
   alert('Cartão importado: '+dentro.length+' dias aplicados.');
+};
+</script>
+<script>
+/* ===================== USUÁRIOS (admin define papéis) ===================== */
+window.setPapel = async function(id, papel){
+  const { error }=await sb.from('profiles').update({papel}).eq('id',id);
+  if(error){ alert('Erro: '+error.message); return; }
+  const u=S.usuarios.find(x=>x.id===id); if(u)u.papel=papel;
+  if(id===S.session.user.id){ S.perfil.papel=papel; }
+  render();
+};
+window._viewUsuarios = function(){
+  const papeis=[['admin','Administrador'],['rh','RH'],['lider','Líder'],['viewer','Visualizador']];
+  return pageHeader('Usuários','Defina o papel de cada usuário (apenas administradores)')
+  + card(`<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-50 border-b border-slate-200 text-slate-600"><tr><th class="px-4 py-3 text-left">E-mail</th><th class="px-4 py-3 text-left">Nome</th><th class="px-4 py-3 text-left w-56">Papel</th></tr></thead><tbody>
+      ${S.usuarios.map(u=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+        <td class="px-4 py-3 font-medium text-slate-800">${u.email||'—'}${u.id===S.session.user.id?' <span class="badge bg-slate-100 text-slate-500">você</span>':''}</td>
+        <td class="px-4 py-3 text-slate-600">${u.nome||'—'}</td>
+        <td class="px-4 py-3"><select onchange="setPapel('${u.id}',this.value)" class="px-3 py-2 border border-slate-200 rounded text-sm">${papeis.map(([v,l])=>`<option value="${v}" ${u.papel===v?'selected':''}>${l}</option>`).join('')}</select></td>
+      </tr>`).join('')||'<tr><td colspan="3" class="text-center text-slate-400 py-6">Nenhum usuário (além de você). Convide pelo painel do Supabase.</td></tr>'}
+      </tbody></table></div>
+      <div class="p-4 text-[11px] text-slate-500 border-t border-slate-200">
+        <p class="mb-1"><strong>Acessos:</strong></p>
+        <p>• <strong>Administrador</strong>: tudo, incluindo Configurações e Usuários.</p>
+        <p>• <strong>RH</strong>: cadastro, ponto, extras, comissão, ranking, relatórios (não edita Configurações).</p>
+        <p>• <strong>Líder</strong>: lança ponto e aprova extras; vê dashboard e relatórios.</p>
+        <p>• <strong>Visualizador</strong>: só leitura (dashboard, comissão, relatórios).</p>
+        <p class="mt-2 text-slate-400">Novos usuários são criados no painel do Supabase (Authentication → Users) e aparecem aqui para você definir o papel.</p>
+      </div>`);
 };
 </script>
 </body>
