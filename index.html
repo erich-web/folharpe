@@ -517,8 +517,8 @@ function calcComissao(){
     totalAPagar:rows.reduce((a,r)=>a+(r.aPagar||0),0)};
 }
 
-const TIPO_PAG={adiantamento:'Adiantamento', oficial:'Oficial', rescisao:'Rescisão'};
-const TIPO_BADGE={adiantamento:'bg-amber-100 text-amber-700', oficial:'bg-blue-100 text-blue-700', rescisao:'bg-rose-100 text-rose-700'};
+const TIPO_PAG={adiantamento:'Adiantamento', oficial:'Oficial', outro:'Outro', rescisao:'Rescisão'};
+const TIPO_BADGE={adiantamento:'bg-amber-100 text-amber-700', oficial:'bg-blue-100 text-blue-700', outro:'bg-slate-200 text-slate-700', rescisao:'bg-rose-100 text-rose-700'};
 function seletorPeriodo(){
   const hoje=new Date(); const ini0=`${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-10`;
   const opts=S.periodos.map(p=>`<option value="${p.id}" ${S.periodoAtual&&p.id===S.periodoAtual.id?'selected':''}>${TIPO_PAG[p.tipo_pagamento]||'Período'} · ${fmtDM(new Date(p.data_inicio+'T00:00:00'))}–${fmtDM(new Date(p.data_fim+'T00:00:00'))}/${p.ano}</option>`).join('');
@@ -529,12 +529,12 @@ function seletorPeriodo(){
       ${podeEscrever('comissao')?`<span class="text-slate-300 hidden sm:inline">|</span>
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-xs text-slate-500">Novo:</span>
-        <select id="np_tipo" class="px-2 py-2 border border-slate-200 rounded text-sm"><option value="adiantamento">Adiantamento</option><option value="oficial" selected>Oficial</option><option value="rescisao">Rescisão</option></select>
+        <select id="np_tipo" class="px-2 py-2 border border-slate-200 rounded text-sm"><option value="oficial" selected>Oficial</option><option value="adiantamento">Adiantamento</option><option value="outro">Outro</option></select>
         <label class="text-xs text-slate-500">apuração</label>
         <input id="np_inicio" type="date" value="${ini0}" class="px-2 py-2 border border-slate-200 rounded text-sm" title="início">
         <span class="text-slate-400 text-xs">a</span>
         <input id="np_fim" type="date" value="${ini0}" class="px-2 py-2 border border-slate-200 rounded text-sm" title="fim">
-        <button onclick="criarPeriodo()" class="px-3 py-2 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 flex items-center gap-1"><i data-feather="plus" class="w-4 h-4"></i>Criar</button>
+        <button onclick="criarPeriodo()" class="px-3 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 flex items-center gap-1"><i data-feather="play" class="w-4 h-4"></i>Calcular</button>
       </div>`:''}
     </div>`,'mb-4');
 }
@@ -581,33 +581,39 @@ function tabelaComissao(c){
 
   if(c.tipo==='adiantamento'){
     const adiantPct=num(S.config.adiantamento_pct,0);
+    const totAdiant=c.rows.reduce((a,r)=>a+r.adiantSalario,0), totCom=c.rows.reduce((a,r)=>a+r.comTotal,0);
     return card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr>
-        ${headComuns}<th class="px-2 py-3 text-right bg-amber-50">Adiant. (${adiantPct}% sal.)</th><th class="px-3 py-3 text-right bg-green-50">TOTAL ADIANT.</th></tr></thead><tbody>
-        ${c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">${comuns(r)}
-          <td class="px-2 py-2 text-right text-amber-700 font-semibold bg-amber-50/40">${money(r.adiantSalario)}</td>
-          <td class="px-3 py-2 text-right font-bold text-green-700 bg-green-50/50">${money(r.total)}</td></tr>`).join('')}
-        <tr class="bg-slate-50 font-bold"><td class="px-3 py-2" colspan="9">TOTAL</td><td class="px-2 py-2 text-right text-amber-700">${money(c.rows.reduce((a,r)=>a+r.adiantSalario,0))}</td><td class="px-3 py-2 text-right text-green-700">${money(c.totalAPagar)}</td></tr>
+        <th class="px-3 py-3 text-left">Funcionário</th><th class="px-2 py-3 text-left">Setor</th>
+        <th class="px-2 py-3 text-center">Base</th><th class="px-2 py-3 text-center">Qual.</th><th class="px-2 py-3 text-center">Desc.</th><th class="px-2 py-3 text-center">Finais</th>
+        <th class="px-2 py-3 text-right">Repique</th>
+        <th class="px-3 py-3 text-right bg-amber-50">40% Adiantamento</th><th class="px-3 py-3 text-right bg-green-50">Comissão</th></tr></thead><tbody>
+        ${c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+          <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${r.f.nome.split(' ').slice(0,2).join(' ')}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pontos(r)}
+          <td class="px-2 py-2 text-right ${r.repique>0?'text-green-600':'text-slate-300'}">${r.repique>0?money(r.repique):'—'}</td>
+          <td class="px-3 py-2 text-right font-bold text-amber-700 bg-amber-50/50">${money(r.adiantSalario)}</td>
+          <td class="px-3 py-2 text-right font-bold text-green-700 bg-green-50/50">${money(r.comTotal)}</td></tr>`).join('')}
+        <tr class="bg-slate-50 font-bold"><td class="px-3 py-2" colspan="7">TOTAIS</td><td class="px-3 py-2 text-right text-amber-700">${money(totAdiant)}</td><td class="px-3 py-2 text-right text-green-700">${money(totCom)}</td></tr>
         </tbody></table></div>
-        <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Adiantamento = <strong>${adiantPct}% do salário</strong> + comissão (colunas separadas). Salário cheio, benefícios, HE e impostos entram no fechamento <strong>oficial</strong>.</div>`);
+        <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200"><strong>40% Adiantamento</strong> = ${adiantPct}% do salário. <strong>Comissão</strong> = comissão do período (com repique e ranking). Pagos separadamente; salário cheio, benefícios, HE e impostos entram no <strong>oficial</strong>.</div>`);
   }
-  // oficial / rescisão
+  // oficial / outro
   const oficial=c.tipo==='oficial';
   return card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr>
       ${headComuns}<th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Mín.Gar.</th><th class="px-2 py-3 text-right">HE (R$)</th>
-      <th class="px-3 py-3 text-right bg-green-50">TOTAL</th>${oficial?'<th class="px-2 py-3 text-right bg-amber-50">Adiant. pago</th>':''}<th class="px-3 py-3 text-right bg-green-100">A PAGAR</th>
-      <th class="px-2 py-3 text-right bg-indigo-50">Dentro</th><th class="px-2 py-3 text-right bg-indigo-50">Fora</th></tr></thead><tbody>
+      <th class="px-3 py-3 text-right bg-green-50">TOTAL</th><th class="px-2 py-3 text-right bg-indigo-50">Dentro</th><th class="px-2 py-3 text-right bg-indigo-50">Fora</th>
+      ${oficial?'<th class="px-2 py-3 text-right bg-amber-50">Adiant. anterior</th><th class="px-3 py-3 text-right bg-green-100">HOLERITE</th>':''}</tr></thead><tbody>
       ${c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">${comuns(r)}
         <td class="px-2 py-2 text-right text-slate-600">${money(r.f.salario)}</td>
         <td class="px-2 py-2 text-right ${r.minComp>0?'text-amber-600 font-semibold':'text-slate-300'}">${r.minComp>0?'+'+money(r.minComp):'—'}</td>
         <td class="px-2 py-2 text-right ${r.hePagar>0?'text-red-600 font-semibold':'text-slate-300'}" title="${r.heMin?fmtMin(r.heMin)+' a pagar':''}">${r.hePagar>0?money(r.hePagar):'—'}</td>
         <td class="px-3 py-2 text-right font-bold text-green-700 bg-green-50/50">${money(r.total)}</td>
-        ${oficial?`<td class="px-2 py-2 text-right ${r.adiantAnterior>0?'text-amber-700 font-semibold bg-amber-50/40':'text-slate-300'}">${r.adiantAnterior>0?'−'+money(r.adiantAnterior):'—'}</td>`:''}
-        <td class="px-3 py-2 text-right font-bold text-green-800 bg-green-100/60">${money(r.aPagar)}</td>
         <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.pagoDentro)}</td>
         <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.pagoFora)}</td>
+        ${oficial?`<td class="px-2 py-2 text-right ${r.adiantAnterior>0?'text-amber-700 font-semibold bg-amber-50/40':'text-slate-300'}">${r.adiantAnterior>0?'−'+money(r.adiantAnterior):'—'}</td>
+        <td class="px-3 py-2 text-right font-bold text-green-800 bg-green-100/60">${money(r.aPagar)}</td>`:''}
       </tr>`).join('')}
       </tbody></table></div>
-      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">${oficial?'<strong>A PAGAR</strong> = total da folha − adiantamento já pago'+(S.adiantAnteriorPeriodo?'':' (nenhum adiantamento anterior encontrado/salvo)')+'.':'Rescisão: cálculo da folha cheio (sem dedução de adiantamento).'} Repique e ranking entram conforme Ponto/Ranking preenchidos.</div>`);
+      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">${oficial?'<strong>HOLERITE</strong> = TOTAL − adiantamento anterior já pago'+(S.adiantAnteriorPeriodo?` (adiant. de ${fmtDM(new Date(S.adiantAnteriorPeriodo.data_inicio+'T00:00:00'))})`:' — nenhum adiantamento anterior salvo')+'.':'Tipo "Outro": cálculo da folha cheio.'} Repique e ranking entram conforme Ponto/Ranking.</div>`);
 }
 
 window.exportComissaoCSV = function(){
