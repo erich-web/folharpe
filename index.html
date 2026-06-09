@@ -1,5 +1,4 @@
 
-
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -1323,19 +1322,35 @@ window._viewHolerite = function(){
 </script>
 <script>
 /* ===================== ESCALA (BETA) ===================== */
-let escSetor=1, escAno=2026, escMes=6, escSemanaIdx=0, escEdit=null;
+let escSetor=1, escAno=2026, escMes=6, escSemanaIdx=0, escEdit=null, escMetaDow=6;
 const DOWesc=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 const PERLBL={almoco:'Almoço',jantar:'Jantar',ambos:'A+J'};
 const addDias=(ds,n)=>{const d=new Date(ds+'T00:00:00');d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);};
 async function carregarEscala(){
   const MM=String(escMes).padStart(2,'0'); const ini=`${escAno}-${MM}-01`;
   const fimD=new Date(escAno,escMes,0); const fim=`${escAno}-${MM}-${String(fimD.getDate()).padStart(2,'0')}`;
-  const [e,m]=await Promise.all([
+  const [e,m,mh]=await Promise.all([
     sb.from('escala').select('*').eq('setor_id',escSetor).gte('data',addDias(ini,-7)).lte('data',addDias(fim,7)).order('data'),
     sb.from('escala_minimo').select('*').eq('setor_id',escSetor),
+    sb.from('escala_meta_hora').select('*'),
   ]);
-  S.escala=e.data||[]; S.escalaMin=m.data||[];
+  S.escala=e.data||[]; S.escalaMin=m.data||[]; S.escalaMetaHora=mh.data||[];
 }
+/* ---- estrutura por hora ---- */
+const hToNum=t=>{ if(!t)return null; const[a,b]=String(t).split(':'); return (+a)+((+b||0)/60); };
+function horasOperacao(){ let minS=24,maxE=0,any=false;
+  (S.escala||[]).forEach(r=>{ if(r.status==='trabalha'&&r.entrada&&r.saida){ any=true; let s=hToNum(r.entrada),e=hToNum(r.saida); if(e<=s)e+=24; minS=Math.min(minS,Math.floor(s)); maxE=Math.max(maxE,Math.ceil(e)); }});
+  if(!any){ minS=11; maxE=24; } if(maxE-minS>24)maxE=minS+24;
+  const hrs=[]; for(let h=minS;h<maxE;h++) hrs.push(((h%24)+24)%24); return hrs; }
+function coversHora(r,h){ if(r.status!=='trabalha'||!r.entrada||!r.saida)return false; let s=hToNum(r.entrada),e=hToNum(r.saida); if(e<=s)e+=24; return (h>=s&&h<e)||(h+24>=s&&h+24<e); }
+function contaHora(data,h){ return (S.escala||[]).filter(r=>r.data===data&&coversHora(r,h)).length; }
+function metaHora(setor,dow,h){ const m=(S.escalaMetaHora||[]).find(x=>x.setor_id===setor&&x.dow===dow&&x.hora===h); return m?Number(m.meta):0; }
+window.escSalvarMetaHora=async function(setor,dow,h,v){ v=+v||0; const ex=(S.escalaMetaHora||[]).find(x=>x.setor_id===setor&&x.dow===dow&&x.hora===h);
+  if(ex){ await sb.from('escala_meta_hora').update({meta:v}).eq('id',ex.id); S.escalaMetaHora=S.escalaMetaHora.map(x=>x.id===ex.id?{...x,meta:v}:x); }
+  else { const {data}=await sb.from('escala_meta_hora').insert({restaurante_id:1,setor_id:setor,dow,hora:h,meta:v}).select('*').single(); if(data){S.escalaMetaHora=S.escalaMetaHora||[];S.escalaMetaHora.push(data);} }
+  render();
+};
+window.escSetMetaDow=function(v){ escMetaDow=+v; render(); };
 function semanasMes(){ const first=new Date(escAno,escMes-1,1),last=new Date(escAno,escMes,0);
   let d=new Date(first); const off=(d.getDay()+6)%7; d.setDate(d.getDate()-off); const ws=[];
   while(d<=last){ ws.push([...Array(7)].map((_,i)=>{const x=new Date(d);x.setDate(x.getDate()+i);return x.toISOString().slice(0,10);})); d.setDate(d.getDate()+7);} return ws; }
@@ -1404,17 +1419,24 @@ window._viewEscala=function(){
   const grid=card(`<div class="p-3 overflow-x-auto"><table class="w-full border-collapse"><thead><tr><th class="px-2 py-2 text-left text-xs text-slate-400 sticky left-0 bg-white">Funcionário</th>${headDays}</tr></thead><tbody>${linhas||'<tr><td colspan="8" class="text-center text-slate-400 py-6">Sem funcionários nesta escala.</td></tr>'}</tbody><tfoot>${footRow('almoco','Almoço')}${footRow('jantar','Jantar')}</tfoot></table>
     <p class="text-[11px] text-slate-400 mt-2">Clique numa célula para editar o turno. Rodapé = nº por período/dia (vermelho = abaixo do mínimo, âmbar = acima).</p></div>`);
   const addBox=editavel?card(`<div class="p-3 flex flex-wrap items-end gap-2"><div><label class="text-[10px] text-slate-500 block">Funcionário cadastrado</label><select id="ep_func" class="px-2 py-1.5 border border-slate-200 rounded text-sm"><option value="">—</option>${S.funcionarios.filter(f=>f.cargos&&f.cargos.setor_id===escSetor).map(f=>`<option value="${f.id}">${f.nome}</option>`).join('')}</select></div><span class="text-xs text-slate-400">ou</span><div><label class="text-[10px] text-slate-500 block">Nome livre</label><input id="ep_nome" placeholder="Nome" class="px-2 py-1.5 border border-slate-200 rounded text-sm"></div><button onclick="escAddPessoa()" class="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">+ Adicionar à semana</button></div>`,'mb-4'):'';
-  const heat=card(`<div class="p-4"><h3 class="font-bold text-slate-900 mb-3 flex items-center gap-2"><i data-feather="grid" class="w-4 h-4 text-blue-600"></i>Headcount por período × dia</h3>
-    <div class="overflow-x-auto"><table class="w-full text-center text-xs"><thead><tr><th class="px-2 py-1 text-left text-slate-400"></th>${dias.map(d=>{const dt=new Date(d+'T00:00:00');return `<th class="px-1 py-1 ${['Dom','Sáb'].includes(DOWesc[dt.getDay()])?'text-blue-500':'text-slate-500'}">${DOWesc[dt.getDay()]}<br>${d.slice(8,10)}</th>`;}).join('')}</tr></thead><tbody>
-    ${['almoco','jantar'].map(per=>{const maxN=Math.max(1,...dias.map(d=>contaPer(d,per)));return `<tr><td class="px-2 py-1 text-left font-semibold text-slate-600">${PERLBL[per]}</td>${dias.map(d=>{const n=contaPer(d,per);const r=n/maxN;const bg=n===0?'bg-white text-slate-300':r>0.66?'bg-blue-600 text-white':r>0.33?'bg-blue-300':'bg-blue-100';return `<td class="p-1"><div class="rounded ${bg} py-1 font-bold">${n}</div></td>`;}).join('')}</tr>`;}).join('')}
-    </tbody></table></div>
-    <h4 class="text-xs font-semibold text-slate-500 mt-4 mb-2">Mínimo de pessoas por dia da semana</h4>
-    <div class="overflow-x-auto"><table class="w-full text-center text-xs"><thead><tr><th class="text-left text-slate-400"></th>${[1,2,3,4,5,6,0].map(dw=>`<th class="px-1 text-slate-500">${DOWesc[dw]}</th>`).join('')}</tr></thead><tbody>
-    ${['almoco','jantar'].map(per=>`<tr><td class="px-2 py-1 text-left font-semibold text-slate-600">${PERLBL[per]}</td>${[1,2,3,4,5,6,0].map(dw=>`<td class="p-0.5"><input type="number" min="0" value="${minPer(dw,per)}" ${editavel?'':'disabled'} onchange="escSalvarMin(${dw},'${per}',this.value)" class="w-11 px-1 py-1 border border-slate-200 rounded text-center text-xs"></td>`).join('')}</tr>`).join('')}
-    </tbody></table></div></div>`);
-  const sug=[]; dias.forEach(d=>{const dow=new Date(d+'T00:00:00').getDay();['almoco','jantar'].forEach(per=>{const mn=minPer(dow,per);if(mn<=0)return;const n=contaPer(d,per);const dd=`${DOWesc[dow]} ${d.slice(8,10)}/${d.slice(5,7)} (${PERLBL[per]})`;if(n<mn)sug.push({t:'falta',txt:`${dd}: ${n} escalados, faltam ${mn-n} para o mínimo (${mn}).`});else if(n>mn+1)sug.push({t:'excesso',txt:`${dd}: ${n} escalados, ${n-mn} acima do mínimo (${mn}) — revisar custo.`});});});
+  const horas=horasOperacao(); const hl=h=>String(h).padStart(2,'0')+'h';
+  const realTab=`<table class="w-full text-center text-xs"><thead><tr><th class="px-2 py-1 text-left text-slate-400 sticky left-0 bg-white">Hora</th>${dias.map(d=>{const dt=new Date(d+'T00:00:00');return `<th class="px-1 py-1 ${['Dom','Sáb'].includes(DOWesc[dt.getDay()])?'text-blue-500':'text-slate-500'}">${DOWesc[dt.getDay()]}<br>${d.slice(8,10)}</th>`;}).join('')}</tr></thead><tbody>
+    ${horas.map(h=>`<tr><td class="px-2 py-0.5 text-left font-semibold text-slate-500 sticky left-0 bg-white">${hl(h)}</td>${dias.map(d=>{const dow=new Date(d+'T00:00:00').getDay();const n=contaHora(d,h);const m=metaHora(escSetor,dow,h);let bg='bg-white text-slate-300';if(n>0){bg=m>0?(n<m?'bg-rose-100 text-rose-700':n>m?'bg-amber-50 text-amber-700':'bg-emerald-50 text-emerald-700'):'bg-blue-100 text-blue-700';}return `<td class="p-0.5"><div class="rounded ${bg} py-0.5 font-bold" title="${n} na escala${m>0?' · meta '+m:''}">${n}${m>0?`<span class="text-[8px] font-normal">/${m}</span>`:''}</div></td>`;}).join('')}</tr>`).join('')}
+    </tbody></table>`;
+  const dowSel=`<select onchange="escSetMetaDow(this.value)" class="px-2 py-1 border border-slate-200 rounded text-xs">${[1,2,3,4,5,6,0].map(dw=>`<option value="${dw}" ${dw===escMetaDow?'selected':''}>${['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'][dw]}</option>`).join('')}</select>`;
+  const metaTab=`<table class="w-full text-center text-xs"><thead><tr><th class="text-left text-slate-400 sticky left-0 bg-white">Hora</th>${S.setores.map(s=>`<th class="px-1 text-slate-500 font-medium" title="${s.nome}">${s.nome.length>7?s.nome.slice(0,6)+'…':s.nome}</th>`).join('')}</tr></thead><tbody>
+    ${horas.map(h=>`<tr><td class="px-2 py-0.5 text-left font-semibold text-slate-500 sticky left-0 bg-white">${hl(h)}</td>${S.setores.map(s=>{const val=metaHora(s.id,escMetaDow,h);const dest=s.id===escSetor;return `<td class="p-0.5"><input type="number" min="0" value="${val||''}" ${editavel?'':'disabled'} onchange="escSalvarMetaHora(${s.id},${escMetaDow},${h},this.value)" class="w-10 px-0.5 py-0.5 border ${dest?'border-blue-300 bg-blue-50':'border-slate-200'} rounded text-center text-xs" placeholder="0"></td>`;}).join('')}</tr>`).join('')}
+    </tbody></table>`;
+  const heat=card(`<div class="p-4"><h3 class="font-bold text-slate-900 mb-1 flex items-center gap-2"><i data-feather="grid" class="w-4 h-4 text-blue-600"></i>Estrutura por hora <span class="badge bg-slate-100 text-slate-500">${setorNome(escSetor)}</span></h3>
+    <p class="text-xs text-slate-500 mb-3">Realizado (da escala) × meta. <span class="text-rose-600 font-medium">vermelho</span> = abaixo da meta · <span class="text-amber-700 font-medium">âmbar</span> = acima · <span class="text-emerald-600 font-medium">verde</span> = na meta.</p>
+    <p class="text-[11px] font-semibold text-slate-500 mb-1">Realizado · ${setorNome(escSetor)} · ${MESES_F[escMes-1]} (semana selecionada)</p>
+    <div class="overflow-x-auto mb-4">${realTab}</div>
+    <div class="flex items-center gap-2 mb-1"><h4 class="text-xs font-semibold text-slate-500 flex items-center gap-2"><i data-feather="target" class="w-3.5 h-3.5"></i>Meta de colaboradores por hora × setor</h4><span class="text-[11px] text-slate-400">dia:</span>${dowSel}</div>
+    <p class="text-[10px] text-slate-400 mb-1">Defina o nº ideal por <strong>setor</strong> em cada hora, para o dia escolhido (vale para todas as semanas). A coluna azul é o setor aberto acima. Futuro: IA sugere pela venda/movimento.</p>
+    <div class="overflow-x-auto">${metaTab}</div></div>`);
+  const sug=[]; dias.forEach(d=>{const dow=new Date(d+'T00:00:00').getDay();let falta=0,exc=0,hf=[],he=[];horas.forEach(h=>{const m=metaHora(escSetor,dow,h);if(m<=0)return;const n=contaHora(d,h);if(n<m){falta+=(m-n);hf.push(hl(h));}else if(n>m){exc+=(n-m);he.push(hl(h));}});const dd=`${DOWesc[dow]} ${d.slice(8,10)}/${d.slice(5,7)}`;if(falta>0)sug.push({t:'falta',txt:`${dd}: ${falta} pessoa-hora abaixo da meta (${hf.join(', ')}).`});if(exc>0)sug.push({t:'excesso',txt:`${dd}: ${exc} pessoa-hora acima da meta (${he.join(', ')}) — revisar custo.`});});
   const sugBox=card(`<div class="p-4"><h3 class="font-bold text-slate-900 mb-3 flex items-center gap-2"><i data-feather="zap" class="w-4 h-4 text-amber-500"></i>Sugestões de otimização</h3>
-    ${sug.length?sug.map(s=>`<div class="flex items-start gap-2 text-sm py-1 ${s.t==='falta'?'text-rose-600':'text-amber-700'}"><i data-feather="${s.t==='falta'?'alert-triangle':'trending-down'}" class="w-4 h-4 mt-0.5 shrink-0"></i><span>${s.txt}</span></div>`).join(''):'<p class="text-sm text-slate-400">Defina os mínimos por dia/período ao lado para receber sugestões. Em breve, com o faturamento por período, elas vão considerar o movimento real de cada dia.</p>'}</div>`);
+    ${sug.length?sug.map(s=>`<div class="flex items-start gap-2 text-sm py-1 ${s.t==='falta'?'text-rose-600':'text-amber-700'}"><i data-feather="${s.t==='falta'?'alert-triangle':'trending-down'}" class="w-4 h-4 mt-0.5 shrink-0"></i><span>${s.txt}</span></div>`).join(''):'<p class="text-sm text-slate-400">Preencha a meta de pessoal por hora (abaixo) para receber sugestões. Em breve, com a venda/movimento, a IA vai sugerir o nº ideal por setor, hora e dia.</p>'}</div>`);
   const folgas=dias.map(d=>{const fs=(S.escala||[]).filter(r=>r.data===d&&r.status==='folga').map(r=>r.nome);return {d,fs};}).filter(x=>x.fs.length);
   const folgBox=card(`<div class="p-4"><h3 class="font-bold text-slate-900 mb-3 flex items-center gap-2"><i data-feather="coffee" class="w-4 h-4 text-slate-400"></i>Folguistas da semana</h3>
     ${folgas.length?`<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">${folgas.map(x=>{const dt=new Date(x.d+'T00:00:00');return `<div class="text-xs"><span class="font-semibold text-slate-600">${DOWesc[dt.getDay()]} ${x.d.slice(8,10)}/${x.d.slice(5,7)}:</span> <span class="text-slate-500">${x.fs.join(', ')}</span></div>`;}).join('')}</div>`:'<p class="text-sm text-slate-400">Ninguém de folga nesta semana.</p>'}</div>`);
