@@ -622,17 +622,7 @@ function seletorPeriodo(){
   const fim=p?p.data_fim:ini;
   const opt=(v,l)=>`<option value="${v}" ${v===tipoV?'selected':''}>${l}</option>`;
   const tipoRes=tipoV==='rescisao';
-  // seletor de períodos JÁ existentes (não cria nada automaticamente)
-  const fn = fid => (S.funcionarios.find(f=>f.id===fid)||{}).nome||'';
-  const periodosOrd = S.periodos.slice().sort((a,b)=>(b.data_inicio||'').localeCompare(a.data_inicio||''));
-  const periodoOpt = p2 => `<option value="${p2.id}" ${p&&p.id===p2.id?'selected':''}>${TIPO_PAG[p2.tipo_pagamento]||p2.tipo_pagamento} · ${p2.data_inicio.slice(8,10)}/${p2.data_inicio.slice(5,7)} a ${p2.data_fim.slice(8,10)}/${p2.data_fim.slice(5,7)}/${p2.ano}${p2.funcionario_id?' · '+fn(p2.funcionario_id):''}</option>`;
-  const quick=`<div class="flex items-center gap-2">
-      <select onchange="selecionarPeriodo(this.value)" class="px-2 py-2 border border-slate-200 rounded text-sm max-w-[320px]">
-        <option value="">${periodosOrd.length?'Períodos existentes…':'Nenhum período ainda'}</option>${periodosOrd.map(periodoOpt).join('')}
-      </select>
-    </div>`;
   const criar=podeEscrever('comissao')?`<div class="flex flex-wrap items-center gap-2">
-      <span class="text-xs text-slate-500">Novo:</span>
       <select id="np_tipo" onchange="render()" class="px-2 py-2 border border-slate-200 rounded text-sm">${opt('oficial','Oficial')}${opt('adiantamento','Adiantamento')}${opt('decimo_terceiro_1','13º 1ª parcela')}${opt('decimo_terceiro_2','13º 2ª parcela')}${opt('rescisao','Rescisão')}${opt('outro','Outro')}</select>
       ${tipoRes?`<select id="np_func" class="px-2 py-2 border border-rose-300 bg-rose-50 rounded text-sm max-w-[180px]" title="funcionário da rescisão"><option value="">— funcionário —</option>${S.funcionarios.map(f=>`<option value="${f.id}" ${p&&p.funcionario_id===f.id?'selected':''}>${f.nome}</option>`).join('')}</select>`:''}
       <label class="text-xs text-slate-500">apuração</label>
@@ -643,7 +633,7 @@ function seletorPeriodo(){
     </div>`:'';
   return card(`<div class="p-4 flex flex-wrap items-center gap-3">
       <span class="text-sm font-semibold text-slate-700 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4 text-blue-600"></i>Período</span>
-      ${quick}<span class="text-slate-300 hidden md:inline">|</span>${criar}
+      ${criar}
     </div>`,'mb-4');
 }
 
