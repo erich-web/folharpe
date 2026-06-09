@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -77,13 +78,16 @@ async function carregarSessao(){
   if(S.session){ await carregarDados(); }
   render();
 }
-sb.auth.onAuthStateChange((_e, session)=>{ S.session=session; if(session){ carregarDados().then(render); } else { render(); } });
+// Só reage a logout aqui; evita recarregar (e piscar) a cada refresh de token / foco da aba.
+sb.auth.onAuthStateChange((event, session)=>{ S.session=session; if(event==='SIGNED_OUT'){ S.restaurante=null; S.perfil=null; current='dashboard'; render(); } });
 
 async function entrar(){
   S.erro=null;
   const email=val('login_email'), senha=val('login_senha');
   const { error } = await sb.auth.signInWithPassword({ email, password:senha });
-  if(error){ S.erro=traduzErro(error.message); render(); }
+  if(error){ S.erro=traduzErro(error.message); render(); return; }
+  const { data } = await sb.auth.getSession(); S.session=data.session;
+  await carregarDados(); render();
 }
 async function cadastrarUsuario(){
   S.erro=null;
@@ -197,6 +201,11 @@ window.abrirMes = async function(val){
   const { data, error }=await sb.from('periodos').insert(rec).select('*').single();
   if(error){ alert('Erro: '+error.message); return; }
   S.periodoAtual=data; await carregarDados(); render();
+};
+window.selecionarPeriodo = async function(id){
+  id=+id; if(!id){ return; }
+  const p=S.periodos.find(x=>x.id===id); if(!p) return;
+  S.periodoAtual=p; await carregarPonto(); render();
 };
 async function gerarPeriodosAno(){
   if(!confirm('Gerar os 24 períodos (adiantamento + oficial) de '+anoSel+'? Os que já existirem não serão duplicados.')) return;
@@ -613,15 +622,13 @@ function seletorPeriodo(){
   const fim=p?p.data_fim:ini;
   const opt=(v,l)=>`<option value="${v}" ${v===tipoV?'selected':''}>${l}</option>`;
   const tipoRes=tipoV==='rescisao';
-  // acesso rápido: cada mês do ano × {Oficial, Adiantamento}, com as datas padrão
-  const cy=new Date().getFullYear(); const anos=[...new Set([cy-1,cy,cy+1,...S.periodos.map(x=>x.ano),anoSel])].sort((a,b)=>a-b);
-  const existe=(tp,m)=>{const d=datasPadraoMes(anoSel,m,tp); return S.periodos.some(x=>x.tipo_pagamento===tp&&x.data_inicio===d.ini&&x.data_fim===d.fim);};
-  const mesOpts=[...Array(12)].map((_,i)=>{const m=i+1,nm=MESES_F[i];
-      return `<option value="oficial|${m}">${nm} · Oficial${existe('oficial',m)?' ✓':''}</option><option value="adiantamento|${m}">${nm} · Adiantamento${existe('adiantamento',m)?' ✓':''}</option>`;}).join('');
+  // seletor de períodos JÁ existentes (não cria nada automaticamente)
+  const fn = fid => (S.funcionarios.find(f=>f.id===fid)||{}).nome||'';
+  const periodosOrd = S.periodos.slice().sort((a,b)=>(b.data_inicio||'').localeCompare(a.data_inicio||''));
+  const periodoOpt = p2 => `<option value="${p2.id}" ${p&&p.id===p2.id?'selected':''}>${TIPO_PAG[p2.tipo_pagamento]||p2.tipo_pagamento} · ${p2.data_inicio.slice(8,10)}/${p2.data_inicio.slice(5,7)} a ${p2.data_fim.slice(8,10)}/${p2.data_fim.slice(5,7)}/${p2.ano}${p2.funcionario_id?' · '+fn(p2.funcionario_id):''}</option>`;
   const quick=`<div class="flex items-center gap-2">
-      <select onchange="anoSel=+this.value;render()" class="px-2 py-2 border border-slate-200 rounded text-sm">${anos.map(a=>`<option value="${a}" ${a===anoSel?'selected':''}>${a}</option>`).join('')}</select>
-      <select onchange="abrirMes(this.value)" class="px-2 py-2 border border-slate-200 rounded text-sm max-w-[230px]">
-        <option value="">Ir para o mês…</option>${mesOpts}
+      <select onchange="selecionarPeriodo(this.value)" class="px-2 py-2 border border-slate-200 rounded text-sm max-w-[320px]">
+        <option value="">${periodosOrd.length?'Períodos existentes…':'Nenhum período ainda'}</option>${periodosOrd.map(periodoOpt).join('')}
       </select>
     </div>`;
   const criar=podeEscrever('comissao')?`<div class="flex flex-wrap items-center gap-2">
