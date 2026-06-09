@@ -1081,7 +1081,25 @@ function parseSecullum(text){
   return { dias, periodoTxt };
 }
 function normNome(s){ return (s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/\s+/g,' ').trim(); }
-function matchFuncPagina(pageText){ const up=normNome(pageText); return S.funcionarios.find(f=>{const d=normNome(f.nome); return d.length>=8 && up.includes(d.slice(0,18)); })||null; }
+const _STOP_NOME=['DE','DA','DO','DOS','DAS','E'];
+function _tokNome(s){ return normNome(s).split(' ').filter(t=>t.length>=3 && !_STOP_NOME.includes(t)); }
+function _lev(a,b){ const m=a.length,n=b.length; const dp=Array.from({length:m+1},(_,i)=>{const r=Array(n+1).fill(0);r[0]=i;return r;}); for(let j=0;j<=n;j++)dp[0][j]=j; for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+(a[i-1]===b[j-1]?0:1)); return dp[m][n]; }
+function _tokSim(t,arr){ const tol=t.length<=5?1:2; return arr.some(x=> x===t || (Math.abs(x.length-t.length)<=2 && _lev(x,t)<=tol)); }
+function matchFuncPagina(pageText){
+  const up=normNome(pageText);
+  // 1) casamento exato (prefixo do nome presente na página)
+  let f=S.funcionarios.find(ff=>{const d=normNome(ff.nome); return d.length>=8 && up.includes(d.slice(0,18)); });
+  if(f) return f;
+  // 2) tolerante: tokens do nome (1ª linha após NOME:) com pequenas variações de grafia
+  const pdfTok=_tokNome(nomeDaPagina(pageText)); if(pdfTok.length<2) return null;
+  let best=null,bestScore=-1,tie=false;
+  S.funcionarios.forEach(ff=>{ const ft=_tokNome(ff.nome); if(ft.length<2) return;
+    const firstOk=_tokSim(ft[0],pdfTok)||pdfTok.some(p=>p.length>=4&&ft[0].length>=4&&p.slice(0,4)===ft[0].slice(0,4));
+    let m=0; ft.forEach(t=>{ if(_tokSim(t,pdfTok)) m++; });
+    if(firstOk && m>=2 && m>=ft.length-1){ if(m>bestScore){bestScore=m;best=ff;tie=false;} else if(m===bestScore){tie=true;} }
+  });
+  return (best&&!tie)?best:null;
+}
 function nomeDaPagina(text){ const ls=text.split('\n'); for(let i=0;i<ls.length;i++){ if(/NOME:/i.test(ls[i])){ const nl=ls[i+1]||''; const m=nl.match(/([A-Za-zÀ-ÿ ]{6,}?)\s+\S*\d/); if(m) return m[1].trim(); return nl.slice(0,30).trim(); } } return ''; }
 window.onSecullumFile = async function(input){
   const file=input.files&&input.files[0]; if(!file) return; input.value='';
