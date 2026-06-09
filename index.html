@@ -36,7 +36,7 @@ const S = {
   restaurante:null, config:null,
   setores:[], cargos:[], funcionarios:[], rateio:[], ranking:[], ciclos:[],
   periodos:[], periodoAtual:null, ponto:[], extras:[], rankingPeriodo:[], pagamentos:[], usuarios:[],
-  adiantAnt:{}, adiantAntPeriodo:null,
+  adiantAnt:{}, adiantAntPeriodo:null, pontoGrid:[],
   loading:false, erro:null,
 };
 let current='dashboard';
@@ -136,7 +136,7 @@ async function carregarPonto(){
   S.adiantAnt={}; S.adiantAntPeriodo=null;
   if(!S.periodoAtual){ S.ponto=[]; S.rankingPeriodo=[]; return; }
   const [pt, rp] = await Promise.all([
-    sb.from('controle_ponto').select('*').eq('periodo_id',S.periodoAtual.id),
+    sb.from('controle_ponto').select('*').gte('data',S.periodoAtual.data_inicio).lte('data',S.periodoAtual.data_fim),
     sb.from('ranking_periodo').select('*').eq('periodo_id',S.periodoAtual.id),
   ]);
   S.ponto=pt.data||[]; S.rankingPeriodo=rp.data||[];
@@ -248,7 +248,9 @@ function podeVer(id){ return (ACESSO[papel()]||ACESSO.viewer).includes(id); }
 function podeEscrever(area){ const p=papel(); if(p==='admin')return true; if(p==='viewer')return false;
   if(area==='config')return false; if(p==='rh')return true; if(p==='lider')return area==='ponto'||area==='extras'; return false; }
 const LABEL_PAPEL={admin:'Administrador',rh:'RH',lider:'Líder',viewer:'Visualizador'};
-function go(id){ if(!podeVer(id))return; current=id; menuOpen=false; render(); }
+function go(id){ if(!podeVer(id))return; current=id; menuOpen=false;
+  if(id==='ponto'){ if(typeof pontoRange!=='undefined'){ if(!pontoRange){const h=new Date();pontoRange={ini:`${h.getFullYear()}-${String(h.getMonth()+1).padStart(2,'0')}-01`,fim:ymdStr(new Date(h.getFullYear(),h.getMonth()+1,0))};} carregarPontoGrid().then(render); return; } }
+  render(); }
 function val(id){ return (document.getElementById(id)||{}).value; }
 
 /* ===================== TELAS ===================== */
@@ -795,50 +797,87 @@ function bancoFunc(funcId){
 }
 window.salvarLimiteHE = async function(v){ const val=+v||0; await sb.from('config_remuneracao').update({limite_he_dia_horas:val}).eq('id',S.config.id); S.config.limite_he_dia_horas=val; render(); };
 
+let pontoRange=null, pontoEdit=null;
+function diasRange(ini,fim){ const out=[]; let d=new Date(ini+'T00:00:00'); const f=new Date(fim+'T00:00:00'); let g=0; while(d<=f&&g<62){out.push(new Date(d));d.setDate(d.getDate()+1);g++;} return out; }
+function periodoDaData(ds){ const ps=S.periodos.filter(p=>['oficial','adiantamento'].includes(p.tipo_pagamento)&&ds>=p.data_inicio&&ds<=p.data_fim).sort((a,b)=>a.tipo_pagamento.localeCompare(b.tipo_pagamento)); return ps[0]?ps[0].id:null; }
+function pgRow(funcId,ds){ return S.pontoGrid.find(p=>p.funcionario_id===funcId&&p.data===ds)||null; }
+function bancoGrid(funcId){ const lim=(Number(S.config?.limite_he_dia_horas)||2)*60; let banco=0,pagar=0; S.pontoGrid.filter(p=>p.funcionario_id===funcId).forEach(p=>{const min=Number(p.banco_minutos)||0; if(min>lim)pagar+=min; else banco+=min;}); return {banco,pagar}; }
+async function carregarPontoGrid(){ if(!pontoRange){S.pontoGrid=[];return;} const {data}=await sb.from('controle_ponto').select('*').gte('data',pontoRange.ini).lte('data',pontoRange.fim); S.pontoGrid=data||[]; }
+window.setPontoRange=async function(){ const ini=val('pr_ini'),fim=val('pr_fim'); if(!ini||!fim||fim<ini){alert('Datas inválidas.');return;} pontoRange={ini,fim}; await carregarPontoGrid(); render(); };
+
 window._viewPonto = function(){
-  const header=pageHeader('Folha de Ponto','Grade da equipe por período — status dia a dia (grava no banco)');
-  if(!S.periodoAtual) return header + seletorPeriodo() + card(`<div class="p-12 text-center text-slate-400"><i data-feather="calendar" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Crie/selecione um período para lançar o ponto.</p></div>`);
-  const p=S.periodoAtual; const dias=diasDoPeriodo(p);
-  const opts=ST_PONTO.map(s=>`<option value="${s}">${s}</option>`).join('');
+  const header=pageHeader('Folha de Ponto','Controle de ponto por intervalo de datas — importação, edição e banco de horas');
+  if(!pontoRange){ const h=new Date(); pontoRange={ini:`${h.getFullYear()}-${String(h.getMonth()+1).padStart(2,'0')}-01`, fim:ymdStr(new Date(h.getFullYear(),h.getMonth()+1,0))}; }
+  const dias=diasRange(pontoRange.ini,pontoRange.fim);
+  const limite=Number(S.config.limite_he_dia_horas)||2;
+  const rangeBar=card(`<div class="p-4 flex flex-wrap items-center gap-3">
+      <span class="text-sm font-semibold text-slate-700 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4 text-blue-600"></i>Ver intervalo</span>
+      <input id="pr_ini" type="date" value="${pontoRange.ini}" class="px-2 py-2 border border-slate-200 rounded text-sm">
+      <span class="text-slate-400 text-xs">a</span>
+      <input id="pr_fim" type="date" value="${pontoRange.fim}" class="px-2 py-2 border border-slate-200 rounded text-sm">
+      <button onclick="setPontoRange()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-1"><i data-feather="search" class="w-4 h-4"></i>Ver</button>
+      <span class="text-slate-300 hidden sm:inline">|</span>
+      <input class="pl-3 pr-2 py-2 border border-slate-200 rounded text-sm w-44" placeholder="filtrar nome…" oninput="filtrarPonto(this.value)">
+    </div>`,'mb-4');
   const head=`<tr><th class="px-3 py-2 text-left sticky left-0 bg-slate-50 z-10">Funcionário</th>${
       dias.map(d=>`<th class="px-1 py-2 text-[10px] font-medium ${[0,6].includes(d.getDay())?'text-blue-500':'text-slate-500'}">${String(d.getDate()).padStart(2,'0')}<br>${DOW1[d.getDay()]}</th>`).join('')
     }<th class="px-2 py-2 bg-slate-100">Falt</th><th class="px-2 py-2 bg-slate-100">Atr</th><th class="px-2 py-2 bg-slate-100">Banco</th><th class="px-2 py-2 bg-slate-100">HE pagar</th></tr>`;
-  const body=S.funcionarios.map(f=>{
-    let fal=0,atr=0;
-    const cells=dias.map(d=>{ const ds=ymdStr(d); const st=statusDe(f.id,ds); if(st==='Falta')fal++; if(st==='Atraso')atr++;
-      const [ab,cl]=ST_AB[st]||['?',''];
-      return `<td class="text-center p-0"><select onchange="setPonto(${f.id},'${ds}',this.value)" class="w-9 text-[11px] rounded border-0 bg-transparent text-center ${cl} cursor-pointer appearance-none" title="${st}">${ST_PONTO.map(s=>`<option value="${s}" ${s===st?'selected':''}>${ST_AB[s][0]}</option>`).join('')}</select></td>`;
+  const body=S.funcionarios.map(f=>{ let fal=0,atr=0;
+    const cells=dias.map(d=>{ const ds=ymdStr(d); const r=pgRow(f.id,ds); const st=r?r.status:'Normal'; if(st==='Falta')fal++; if(st==='Atraso')atr++;
+      const [ab,cl]=ST_AB[st]||['?','']; const tip=r?`${r.entrada_1||''}${r.saida_1?'-'+r.saida_1:''} ${r.horas_trabalhadas?Number(r.horas_trabalhadas).toFixed(1)+'h':''}`.trim():'';
+      return `<td class="text-center p-0"><button onclick="editarDia(${f.id},'${ds}')" class="w-7 h-6 text-[11px] rounded ${cl} hover:ring-2 hover:ring-blue-300" title="${(tip||st)} — clique p/ editar">${ab}</button></td>`;
     }).join('');
-    const b=bancoFunc(f.id);
-    return `<tr class="border-b border-slate-100 hover:bg-blue-50/30"><td class="px-3 py-1.5 font-medium text-slate-800 sticky left-0 bg-white whitespace-nowrap">${f.nome.split(' ').slice(0,2).join(' ')}</td>${cells}
+    const b=bancoGrid(f.id);
+    return `<tr class="border-b border-slate-100 hover:bg-blue-50/30 pntrow" data-n="${(f.nome||'').toLowerCase()}"><td class="px-3 py-1.5 font-medium text-slate-800 sticky left-0 bg-white whitespace-nowrap">${f.nome.split(' ').slice(0,2).join(' ')}</td>${cells}
       <td class="text-center bg-slate-50 font-semibold ${fal?'text-red-600':'text-slate-300'}">${fal||'0'}</td>
       <td class="text-center bg-slate-50 font-semibold ${atr?'text-orange-600':'text-slate-300'}">${atr||'0'}</td>
       <td class="text-center bg-slate-50 font-semibold ${b.banco?(b.banco>=0?'text-green-600':'text-red-600'):'text-slate-300'}">${b.banco?fmtMin(b.banco):'—'}</td>
       <td class="text-center bg-slate-50 font-bold ${b.pagar>0?'text-red-600':'text-slate-300'}">${b.pagar>0?fmtMin(b.pagar):'—'}</td></tr>`;
   }).join('');
-  const limite=Number(S.config.limite_he_dia_horas)||2;
-  return header + seletorPeriodo()
-  + `<div class="mb-3 flex items-center gap-2 text-sm text-slate-600"><i data-feather="clock" class="w-4 h-4 text-blue-600"></i>Horas extras: acima de <input type="number" step="0.5" min="0" value="${limite}" onchange="salvarLimiteHE(this.value)" class="w-16 px-2 py-1 border border-slate-200 rounded text-right">h/dia → <span class="badge bg-red-100 text-red-700">pagar</span>; até o limite → <span class="badge bg-green-100 text-green-700">banco</span>. <span class="text-slate-400 text-xs">(banco vem da importação do cartão)</span></div>`
-  + `<div class="p-4 mb-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+  return header + rangeBar
+  + `<div class="mb-3 flex items-center gap-2 text-sm text-slate-600"><i data-feather="clock" class="w-4 h-4 text-blue-600"></i>HE: acima de <input type="number" step="0.5" min="0" value="${limite}" onchange="salvarLimiteHE(this.value)" class="w-16 px-2 py-1 border border-slate-200 rounded text-right">h/dia → <span class="badge bg-red-100 text-red-700">pagar</span>; até o limite → <span class="badge bg-green-100 text-green-700">banco</span>.</div>`
+  + `<div class="p-4 mb-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between flex-wrap gap-2">
       <div class="flex items-center gap-3"><i data-feather="upload-cloud" class="w-5 h-5 text-blue-600"></i>
-        <div><p class="text-sm font-medium text-slate-900">Importar Cartão de Ponto (Secullum PDF)</p><p class="text-xs text-slate-600">O sistema lê as batidas e sugere a escala. Você revisa antes de aplicar.</p></div></div>
+        <div><p class="text-sm font-medium text-slate-900">Importar Cartão de Ponto (Secullum PDF mensal · várias folhas)</p><p class="text-xs text-slate-600">Lê todas as páginas, casa cada funcionário pelo nome e atualiza o ponto. Você revisa antes.</p></div></div>
       <label class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 cursor-pointer flex items-center gap-2"><i data-feather="upload-cloud" class="w-4 h-4"></i>Selecionar PDF<input type="file" accept="application/pdf" class="hidden" onchange="onSecullumFile(this)"></label>
     </div>`
   + (pontoImport ? viewImportPreview() : '')
   + card(`<div class="overflow-x-auto"><table class="w-full text-xs" style="border-collapse:collapse"><thead class="bg-slate-50 text-slate-600">${head}</thead><tbody>${body}</tbody></table></div>
-      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Mude a letra de cada dia: ${Object.entries(ST_AB).map(([k,[ab,cl]])=>`<span class="inline-block px-1 rounded ${cl}">${ab}</span>=${k}`).join(' · ')}. As alterações gravam na hora e já entram no cálculo da Comissão.</div>`);
+      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Clique numa célula para <strong>editar o dia</strong> (status, entrada/saída, horas, banco). ${Object.entries(ST_AB).map(([k,[ab,cl]])=>`<span class="inline-block px-1 rounded ${cl}">${ab}</span>=${k}`).join(' · ')}.</div>`)
+  + (pontoEdit ? viewPontoEditor() : '');
 };
-window.setPonto = async function(funcId, ds, status){
-  const pid=S.periodoAtual.id;
-  if(status==='Normal'){
-    await sb.from('controle_ponto').delete().eq('funcionario_id',funcId).eq('periodo_id',pid).eq('data',ds);
-    S.ponto=S.ponto.filter(p=>!(p.funcionario_id===funcId&&p.data===ds));
-  } else {
-    const ex=S.ponto.find(p=>p.funcionario_id===funcId&&p.data===ds);
-    if(ex){ await sb.from('controle_ponto').update({status}).eq('id',ex.id); ex.status=status; }
-    else { const {data,error}=await sb.from('controle_ponto').insert({funcionario_id:funcId,periodo_id:pid,data:ds,status,origem:'manual'}).select().single(); if(!error&&data) S.ponto.push(data); }
-  }
-  render();
+window.filtrarPonto=function(q){ q=(q||'').toLowerCase(); document.querySelectorAll('.pntrow').forEach(r=>{r.style.display=r.dataset.n.includes(q)?'':'none';}); };
+window.editarDia=function(funcId, ds){ const r=pgRow(funcId,ds); pontoEdit={funcId, ds, id:r?r.id:null, status:r?r.status:'Normal', ent:r?(r.entrada_1||''):'', sai:r?(r.saida_1||''):'', horas:r?(r.horas_trabalhadas||0):0, banco:r?(r.banco_minutos||0):0}; render(); };
+window.fecharEditorDia=function(){ pontoEdit=null; render(); };
+function viewPontoEditor(){
+  const e=pontoEdit, f=S.funcionarios.find(x=>x.id===e.funcId);
+  return `<div class="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)fecharEditorDia()">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-md">
+      <div class="flex items-center justify-between px-5 py-3 border-b border-slate-200"><h3 class="font-bold text-slate-900">${f?f.nome.split(' ').slice(0,2).join(' '):''} · ${e.ds.split('-').reverse().join('/')}</h3><button onclick="fecharEditorDia()" class="text-slate-400 hover:text-slate-700"><i data-feather="x" class="w-5 h-5"></i></button></div>
+      <div class="p-5 grid grid-cols-2 gap-3">
+        <div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">Status</label><select id="ed_status" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${ST_PONTO.map(s=>`<option ${s===e.status?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Entrada</label><input id="ed_ent" type="time" value="${e.ent}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Saída</label><input id="ed_sai" type="time" value="${e.sai}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Horas trabalhadas</label><input id="ed_horas" type="number" step="0.01" value="${e.horas}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Banco (min, +/−)</label><input id="ed_banco" type="number" value="${e.banco}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
+      </div>
+      <div class="flex justify-between px-5 py-3 border-t border-slate-200">
+        ${e.id?`<button onclick="excluirDia()" class="px-3 py-2 text-red-500 text-sm hover:underline">Limpar dia</button>`:'<span></span>'}
+        <div class="flex gap-2"><button onclick="fecharEditorDia()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Cancelar</button><button onclick="salvarDia()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">Salvar</button></div>
+      </div>
+    </div></div>`;
+}
+window.salvarDia=async function(){
+  const e=pontoEdit, v=id=>(document.getElementById(id)||{}).value;
+  const rec={ funcionario_id:e.funcId, periodo_id:periodoDaData(e.ds), data:e.ds, status:v('ed_status'),
+    entrada_1:v('ed_ent')||null, saida_1:v('ed_sai')||null, horas_trabalhadas:+v('ed_horas')||0, banco_minutos:+v('ed_banco')||0, origem:'manual', validado:true };
+  const { error }=await sb.from('controle_ponto').upsert(rec,{onConflict:'funcionario_id,data'});
+  if(error){ alert('Erro ao salvar: '+error.message); return; }
+  pontoEdit=null; await carregarPontoGrid(); render();
+};
+window.excluirDia=async function(){
+  const e=pontoEdit; await sb.from('controle_ponto').delete().eq('funcionario_id',e.funcId).eq('data',e.ds);
+  pontoEdit=null; await carregarPontoGrid(); render();
 };
 </script>
 <script>
@@ -994,76 +1033,64 @@ function parseSecullum(text){
   });
   return { dias, periodoTxt };
 }
+function normNome(s){ return (s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/\s+/g,' ').trim(); }
+function matchFuncPagina(pageText){ const up=normNome(pageText); return S.funcionarios.find(f=>{const d=normNome(f.nome); return d.length>=8 && up.includes(d.slice(0,18)); })||null; }
+function nomeDaPagina(text){ const ls=text.split('\n'); for(let i=0;i<ls.length;i++){ if(/NOME:/i.test(ls[i])){ const nl=ls[i+1]||''; const m=nl.match(/([A-Za-zÀ-ÿ ]{6,}?)\s+\S*\d/); if(m) return m[1].trim(); return nl.slice(0,30).trim(); } } return ''; }
 window.onSecullumFile = async function(input){
   const file=input.files&&input.files[0]; if(!file) return; input.value='';
   if(!window.pdfjsLib){ alert('Biblioteca de PDF não carregou. Recarregue a página e tente de novo.'); return; }
   try{
     const buf=await file.arrayBuffer();
     const pdf=await pdfjsLib.getDocument({data:buf}).promise;
-    let text='';
-    for(let i=1;i<=pdf.numPages;i++){ const pg=await pdf.getPage(i); text+=extrairLinhasPDF(await pg.getTextContent())+'\n'; }
-    const parsed=parseSecullum(text);
-    if(!parsed.dias.length){ alert('Não consegui identificar os dias no PDF. É um cartão Secullum?'); return; }
-    const up=text.toUpperCase();
-    const f=S.funcionarios.find(x=> up.includes((x.nome||'').toUpperCase().slice(0,18)));
-    pontoImport={ funcId:f?f.id:null, funcNomePDF:f?f.nome:'(não identificado)', dias:parsed.dias, periodoTxt:parsed.periodoTxt };
-    current='ponto'; render();
+    const funcs=[]; let periodoTxt='';
+    for(let i=1;i<=pdf.numPages;i++){ const pg=await pdf.getPage(i); const text=extrairLinhasPDF(await pg.getTextContent());
+      const parsed=parseSecullum(text); if(!parsed.dias.length) continue; if(parsed.periodoTxt) periodoTxt=parsed.periodoTxt;
+      const f=matchFuncPagina(text);
+      funcs.push({ pagina:i, nomePDF:(f?f.nome:(nomeDaPagina(text)||('Página '+i))), funcId:f?f.id:null, dias:parsed.dias });
+    }
+    if(!funcs.length){ alert('Não identifiquei folhas de ponto no PDF.'); return; }
+    pontoImport={ periodoTxt, funcs }; current='ponto'; render();
   }catch(e){ alert('Erro ao ler o PDF: '+(e.message||e)); }
 };
 window.cancelarImport=function(){ pontoImport=null; render(); };
-window.setImportFunc=function(id){ pontoImport.funcId=+id||null; render(); };
-window.setImportStatus=function(i,st){ pontoImport.dias[i].status=st; render(); };
+window.setImportFuncRow=function(i,id){ pontoImport.funcs[i].funcId=+id||null; render(); };
 
 function viewImportPreview(){
-  const p=S.periodoAtual, imp=pontoImport;
-  const dentro=imp.dias.filter(d=> p && d.data>=p.data_inicio && d.data<=p.data_fim);
-  const cnt={}; dentro.forEach(d=>cnt[d.status]=(cnt[d.status]||0)+1);
-  const chips=Object.entries(cnt).map(([k,v])=>`<span class="badge bg-slate-100 text-slate-700 mr-1">${k}: ${v}</span>`).join('');
-  const totalBanco=dentro.reduce((a,d)=>a+d.banco,0);
-  const bsg=totalBanco<0?'-':'+', ba=Math.abs(totalBanco);
+  const imp=pontoImport; const casados=imp.funcs.filter(x=>x.funcId).length;
   return card(`<div class="p-5 mb-4 border-2 border-blue-200">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="file-text" class="w-4 h-4 text-blue-600"></i>Prévia da leitura ${imp.periodoTxt?`<span class="font-normal text-slate-400 text-sm">(${imp.periodoTxt})</span>`:''}</h3>
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="file-text" class="w-4 h-4 text-blue-600"></i>Prévia da importação — ${imp.funcs.length} folhas ${imp.periodoTxt?`<span class="font-normal text-slate-400 text-sm">(${imp.periodoTxt})</span>`:''}</h3>
         <button onclick="cancelarImport()" class="text-slate-400 hover:text-slate-700"><i data-feather="x" class="w-5 h-5"></i></button>
       </div>
-      <div class="flex flex-wrap items-center gap-3 mb-3 text-sm">
-        <span class="text-slate-500">Funcionário:</span>
-        <select onchange="setImportFunc(this.value)" class="px-2 py-1 border ${imp.funcId?'border-slate-200':'border-amber-300 bg-amber-50'} rounded text-sm"><option value="">— selecione —</option>${S.funcionarios.map(f=>`<option value="${f.id}" ${f.id===imp.funcId?'selected':''}>${f.nome}</option>`).join('')}</select>
-        ${imp.funcId?'':'<span class="text-amber-600 text-xs">não identifiquei pelo PDF — escolha manualmente</span>'}
-      </div>
-      <div class="mb-3 text-sm flex items-center gap-2 flex-wrap"><span class="text-slate-500">No período (${dentro.length} dias):</span> ${chips||'<span class="text-slate-400">nenhum dia do PDF cai no período</span>'} ${dentro.length?`<span class="badge bg-indigo-100 text-indigo-700">Banco: ${bsg}${String(Math.floor(ba/60)).padStart(2,'0')}:${String(ba%60).padStart(2,'0')}</span>`:''}</div>
-      <div class="overflow-x-auto max-h-72 overflow-y-auto border border-slate-100 rounded"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 sticky top-0"><tr><th class="px-2 py-1.5 text-left">Data</th><th class="px-2 py-1.5">Dia</th><th class="px-2 py-1.5">Entrada</th><th class="px-2 py-1.5">Saída</th><th class="px-2 py-1.5">Horas</th><th class="px-2 py-1.5">Turno</th><th class="px-2 py-1.5">Banco</th><th class="px-2 py-1.5 text-left">Status</th></tr></thead><tbody>
-        ${imp.dias.map((d,i)=>{ const noper = p && d.data>=p.data_inicio && d.data<=p.data_fim;
-          return `<tr class="border-b border-slate-100 ${noper?'':'opacity-40'}">
-            <td class="px-2 py-1 font-medium">${d.dataBR}</td><td class="px-2 py-1 text-center text-slate-500">${d.wd}</td>
-            <td class="px-2 py-1 text-center ${d.ent?'':'text-slate-300'}">${d.ent||'—'}</td><td class="px-2 py-1 text-center ${d.sai?'':'text-slate-300'}">${d.sai||'—'}</td>
-            <td class="px-2 py-1 text-center">${d.horas?d.horas.toFixed(2)+'h':'—'}</td><td class="px-2 py-1 text-center text-slate-500">${d.turno||'—'}</td>
-            <td class="px-2 py-1 text-center ${d.sld.startsWith('+')?'text-green-600':d.sld.startsWith('-')?'text-red-500':'text-slate-300'}">${d.sld||'—'}</td>
-            <td class="px-2 py-1"><select onchange="setImportStatus(${i},this.value)" class="px-1 py-0.5 border border-slate-200 rounded text-xs">${ST_PONTO.map(s=>`<option ${s===d.status?'selected':''}>${s}</option>`).join('')}</select></td>
-          </tr>`;}).join('')}
+      <p class="text-sm mb-3"><span class="badge bg-green-100 text-green-700">${casados} casados</span> ${imp.funcs.length-casados>0?`<span class="badge bg-amber-100 text-amber-700">${imp.funcs.length-casados} não identificados</span>`:''} <span class="text-slate-400 text-xs ml-2">Cada dia será gravado no período correto pela data. Só funcionários casados são aplicados.</span></p>
+      <div class="overflow-x-auto max-h-80 overflow-y-auto border border-slate-100 rounded"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 sticky top-0"><tr><th class="px-2 py-1.5 text-left">Folha (nome no PDF)</th><th class="px-2 py-1.5 text-left">Funcionário no sistema</th><th class="px-2 py-1.5 text-center">Dias</th><th class="px-2 py-1.5 text-center">Faltas</th><th class="px-2 py-1.5 text-right">Banco</th></tr></thead><tbody>
+        ${imp.funcs.map((x,i)=>{ const fal=x.dias.filter(d=>d.status==='Falta').length; const banco=x.dias.reduce((a,d)=>a+d.banco,0);
+          return `<tr class="border-b border-slate-100 ${x.funcId?'':'bg-amber-50/50'}">
+            <td class="px-2 py-1 text-slate-600">${x.nomePDF}</td>
+            <td class="px-2 py-1"><select onchange="setImportFuncRow(${i},this.value)" class="px-2 py-1 border ${x.funcId?'border-slate-200':'border-amber-300 bg-amber-50'} rounded text-xs w-56"><option value="">— não importar —</option>${S.funcionarios.map(f=>`<option value="${f.id}" ${f.id===x.funcId?'selected':''}>${f.nome}</option>`).join('')}</select></td>
+            <td class="px-2 py-1 text-center">${x.dias.length}</td>
+            <td class="px-2 py-1 text-center ${fal?'text-red-600 font-semibold':'text-slate-300'}">${fal||'—'}</td>
+            <td class="px-2 py-1 text-right">${fmtMin(banco)}</td></tr>`; }).join('')}
       </tbody></table></div>
       <div class="flex justify-end gap-2 mt-4">
         <button onclick="cancelarImport()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Cancelar</button>
-        <button onclick="aplicarImport()" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700 flex items-center gap-2"><i data-feather="check" class="w-4 h-4"></i>Aplicar à grade (${dentro.length} dias)</button>
+        <button onclick="aplicarImport()" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700 flex items-center gap-2"><i data-feather="check" class="w-4 h-4"></i>Aplicar (${casados} funcionários)</button>
       </div>
-      <p class="text-[11px] text-slate-400 mt-2">Só os dias dentro do período selecionado serão aplicados. Linhas esmaecidas estão fora do período.</p>
+      <p class="text-[11px] text-slate-400 mt-2">Ajuste o "Funcionário no sistema" das folhas não identificadas (ou deixe "não importar"). Após aplicar, revise/edite na grade abaixo.</p>
     </div>`);
 }
 window.aplicarImport = async function(){
-  const imp=pontoImport, p=S.periodoAtual;
-  if(!imp.funcId){ alert('Escolha o funcionário.'); return; }
-  if(!p){ alert('Selecione um período.'); return; }
-  const dentro=imp.dias.filter(d=> d.data>=p.data_inicio && d.data<=p.data_fim);
-  if(!dentro.length){ alert('Nenhum dia do PDF cai no período selecionado.'); return; }
-  const fid=imp.funcId, nome=imp.funcNomePDF;
-  await sb.from('controle_ponto').delete().eq('funcionario_id',fid).eq('periodo_id',p.id);
-  const recs=dentro.map(d=>({ funcionario_id:fid, periodo_id:p.id, data:d.data, status:d.status,
-    horas_trabalhadas:d.horas||0, banco_minutos:d.banco||0, turno:d.turno||null,
-    entrada_1:d.ent||null, saida_1:d.sai||null, origem:'upload', validado:true }));
-  const { error }=await sb.from('controle_ponto').insert(recs);
-  if(error){ alert('Erro ao gravar: '+error.message); return; }
-  pontoImport=null; await carregarPonto(); render();
-  alert('Cartão importado: '+dentro.length+' dias aplicados.');
+  const imp=pontoImport; const alvos=imp.funcs.filter(x=>x.funcId);
+  if(!alvos.length){ alert('Nenhum funcionário casado para importar.'); return; }
+  let recs=[];
+  alvos.forEach(x=>{ x.dias.forEach(d=>{ recs.push({ funcionario_id:x.funcId, periodo_id:periodoDaData(d.data), data:d.data, status:d.status,
+    horas_trabalhadas:d.horas||0, banco_minutos:d.banco||0, turno:d.turno||null, entrada_1:d.ent||null, saida_1:d.sai||null, origem:'upload', validado:true }); }); });
+  // upsert em lotes
+  const chunk=500; let erro=null;
+  for(let i=0;i<recs.length;i+=chunk){ const { error }=await sb.from('controle_ponto').upsert(recs.slice(i,i+chunk),{onConflict:'funcionario_id,data'}); if(error){erro=error;break;} }
+  if(erro){ alert('Erro ao gravar: '+erro.message); return; }
+  pontoImport=null; await carregarPontoGrid(); if(S.periodoAtual) await carregarPonto(); render();
+  alert('Importado: '+alvos.length+' funcionários · '+recs.length+' dias.');
 };
 </script>
 <script>
