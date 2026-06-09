@@ -108,7 +108,7 @@ async function carregarDados(){
     const r = await sb.from('restaurantes').select('*').order('id').limit(1).single();
     S.restaurante = r.data;
     const rid = S.restaurante?.id;
-    const [cfg, set, car, fun, rat, rank, cic, per, ext, pag] = await Promise.all([
+    const [cfg, set, car, fun, rat, rank, cic, per, sol, pag] = await Promise.all([
       sb.from('config_remuneracao').select('*').eq('restaurante_id',rid).single(),
       sb.from('setores').select('*').eq('restaurante_id',rid).order('ordem'),
       sb.from('cargos').select('*, setores(nome)').eq('restaurante_id',rid).order('pontos',{ascending:false}),
@@ -117,12 +117,12 @@ async function carregarDados(){
       sb.from('ranking_premio').select('*').eq('restaurante_id',rid).order('colocacao'),
       sb.from('ciclos_pagamento').select('*').eq('restaurante_id',rid).order('ordem'),
       sb.from('periodos').select('*, ciclos_pagamento(nome)').eq('restaurante_id',rid).order('data_inicio',{ascending:false}),
-      sb.from('extras').select('*, setores(nome)').eq('restaurante_id',rid).order('data'),
+      sb.from('solicitacoes_extra').select('*, setores(nome), funcionarios(nome)').eq('restaurante_id',rid).order('data',{ascending:false}),
       sb.from('pagamentos').select('*, periodos(data_inicio,data_fim,ano)').eq('restaurante_id',rid).order('data_pagamento',{ascending:false}),
     ]);
     S.config=cfg.data; S.setores=set.data||[]; S.cargos=car.data||[]; S.funcionarios=fun.data||[];
     S.rateio=rat.data||[]; S.ranking=rank.data||[]; S.ciclos=cic.data||[];
-    S.periodos=per.data||[]; S.extras=ext.data||[]; S.pagamentos=pag.data||[];
+    S.periodos=per.data||[]; S.solicitacoes=sol.data||[]; S.pagamentos=pag.data||[];
     const prof=await sb.from('profiles').select('*').eq('id',S.session.user.id).single(); S.perfil=prof.data;
     if(S.perfil?.papel==='admin'){ const us=await sb.from('profiles').select('*').order('email'); S.usuarios=us.data||[]; }
     if(!S.periodoAtual && S.periodos.length) S.periodoAtual=S.periodos[0];
@@ -232,7 +232,7 @@ const PAGES=[
   {id:'cadastro',label:'Cadastro',icon:'users'},
   {id:'config',label:'Configurações',icon:'sliders'},
   {id:'ponto',label:'Folha de Ponto',icon:'calendar'},
-  {id:'extras',label:'Extras',icon:'user-plus'},
+  {id:'extras',label:'Extras (RH)',icon:'clipboard'},
   {id:'comissao',label:'Comissão Quinzenal',icon:'dollar-sign'},
   {id:'ranking',label:'Ranking',icon:'award'},
   {id:'holerite',label:'Holerite',icon:'file-text',beta:true},
@@ -241,13 +241,15 @@ const PAGES=[
 ];
 const ACESSO={ admin:['dashboard','cadastro','config','ponto','extras','comissao','ranking','holerite','relatorios','usuarios'],
   rh:['dashboard','cadastro','ponto','extras','comissao','ranking','holerite','relatorios'],
-  lider:['dashboard','ponto','extras','relatorios'],
+  lider:['dashboard','ponto','relatorios'],
+  gerente:['dashboard','relatorios'],
   viewer:['dashboard','comissao','relatorios'] };
 function papel(){ return S.perfil?.papel || 'viewer'; }
 function podeVer(id){ return (ACESSO[papel()]||ACESSO.viewer).includes(id); }
 function podeEscrever(area){ const p=papel(); if(p==='admin')return true; if(p==='viewer')return false;
-  if(area==='config')return false; if(p==='rh')return true; if(p==='lider')return area==='ponto'||area==='extras'; return false; }
-const LABEL_PAPEL={admin:'Administrador',rh:'RH',lider:'Líder',viewer:'Visualizador'};
+  if(area==='config')return false; if(p==='rh')return true;
+  if(p==='lider')return area==='ponto'; return false; }
+const LABEL_PAPEL={admin:'Administrador',rh:'RH',lider:'Líder',gerente:'Gerente Geral',viewer:'Visualizador'};
 function go(id){ if(!podeVer(id))return; current=id; menuOpen=false;
   if(id==='ponto'){ if(typeof pontoRange!=='undefined'){ if(!pontoRange){const h=new Date();pontoRange={ini:`${h.getFullYear()}-${String(h.getMonth()+1).padStart(2,'0')}-01`,fim:ymdStr(new Date(h.getFullYear(),h.getMonth()+1,0))};} carregarPontoGrid().then(render); return; } }
   render(); }
@@ -452,8 +454,8 @@ window._viewConfig = function(){
       ${f('Advertência', numInput('cf_adv', cfg.desconto_advertencia_pct,'%'))}
     </div>`)
   + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="dollar-sign" class="w-4 h-4 text-green-600"></i>Valores e holerite</h3>
-      ${f('Dobra (R$/turno)', numInput('cf_dobra', cfg.valor_dobra))}
-      ${f('Diária de extra (R$)', numInput('cf_extra', cfg.valor_extra_diaria))}
+      ${f('Dobra (R$ por 8h)', numInput('cf_dobra', cfg.valor_dobra))}
+      ${f('Extra (R$ por 8h)', numInput('cf_extra', cfg.valor_extra_diaria))}
       ${f('Retenção da casa', numInput('cf_retencao', cfg.retencao_casa_pct,'%'))}
       ${f('Comissão por dentro do holerite', numInput('cf_dentro', cfg.holerite_dentro_pct,'%'))}
       ${f('% extras descontado da taxa', numInput('cf_descextras', cfg.desc_extras_pct,'%'))}
@@ -516,8 +518,8 @@ function calcComissao(){
   const taxaTotal=Number(p.taxa_servico_total)||0;
   const retPct=Number(p.retencao_pct)||0;
   const retencao=taxaTotal*retPct/100;
-  const extrasAprov=S.extras.filter(e=>e.status==='Aprovado' && e.periodo_id===p.id);
-  const extrasTotal=extrasAprov.reduce((a,e)=>a+e.quantidade*Number(e.diaria),0);
+  const solProv=(S.solicitacoes||[]).filter(s=>s.provisionado && s.data>=p.data_inicio && s.data<=p.data_fim);
+  const extrasTotal=solProv.reduce((a,s)=>a+custoUnit(s),0);
   const extrasDesc=extrasTotal*Number(cfg.desc_extras_pct)/100;
   const distribuida=taxaTotal-retencao-extrasDesc;
   const ratePct={}; S.setores.forEach(s=>{const r=S.rateio.find(x=>x.tipo==='setor'&&x.setor_id===s.id);ratePct[s.nome]=Number(r?.percentual||0);});
@@ -553,6 +555,7 @@ function calcComissao(){
     r.salario=Number(r.f.salario); r.benef=Number(r.f.beneficios||0);
     r.minComp=0; r.adiantSalario=0; r.adiantSalPago=0; r.adiantComPago=0;
     r.comissaoTotal=r.comTotal;
+    r.extraDobra=extraFuncPeriodo(r.f.id,p);                  // extras/dobras provisionados (pago por fora)
 
     if(tipo==='adiantamento'){
       r.adiantSalario=r.salario*adiantPct/100;
@@ -589,12 +592,14 @@ function calcComissao(){
     }
     r.comDentro=r.comissaoTotal*dentroPct;                      // vai pro holerite
     r.comFora=r.comissaoTotal*foraPct;                          // interno
+    r.totalPagar=(r.totalPagar||0)+r.extraDobra;               // extra/dobra entra na quinzena (por fora)
   });
   let outRows=rows;
   if(tipo==='rescisao' && p.funcionario_id) outRows=rows.filter(r=>r.f.id===p.funcionario_id);
   return {tipo, dias,taxaTotal,retencao,retPct,extrasTotal,extrasDesc,distribuida,rows:outRows,rsPonto,
     bucketRanking:distribuida*rankingPct/100,
     totalComissao:outRows.reduce((a,r)=>a+r.comTotal,0),
+    totalExtraDobra:outRows.reduce((a,r)=>a+(r.extraDobra||0),0),
     totalPagar:outRows.reduce((a,r)=>a+(r.totalPagar||0),0),
     totalHolerite:outRows.reduce((a,r)=>a+(r.holerite||0),0)};
 }
@@ -885,71 +890,110 @@ window.excluirDia=async function(){
 const MESES_F=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const DOW3=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 let extrasMes={ano:new Date().getFullYear(), mes:new Date().getMonth()+1};
-function extrasDoDia(ds){ return S.extras.filter(e=>e.data===ds); }
-async function reloadExtras(){ const {data}=await sb.from('extras').select('*, setores(nome)').eq('restaurante_id',S.restaurante.id).order('data'); S.extras=data||[]; }
-window.mudarMesExtras=function(delta){ let m=extrasMes.mes+delta,a=extrasMes.ano; if(m<1){m=12;a--;} if(m>12){m=1;a++;} extrasMes={ano:a,mes:m}; render(); };
-window.addExtra=async function(){
-  const ds=val('ex_data'); if(!ds){ alert('Informe a data.'); return; }
-  const per=S.periodos.find(p=> ds>=p.data_inicio && ds<=p.data_fim);
-  const rec={ restaurante_id:S.restaurante.id, periodo_id:per?per.id:null, data:ds, setor_id:+val('ex_setor')||null,
-    funcao:val('ex_funcao')||'Extra', quantidade:+val('ex_qtd')||1, diaria:+val('ex_diaria')||0, lider:val('ex_lider')||'', status:'Aprovado' };
-  const { error }=await sb.from('extras').insert(rec); if(error){ alert('Erro: '+error.message); return; }
-  const d=new Date(ds+'T00:00:00'); extrasMes={ano:d.getFullYear(), mes:d.getMonth()+1};
-  await reloadExtras(); render();
-};
-window.setExtraStatus=async function(id,status){ await sb.from('extras').update({status}).eq('id',id); await reloadExtras(); render(); };
-window.excluirExtra=async function(id){ if(!confirm('Excluir este extra?'))return; await sb.from('extras').delete().eq('id',id); await reloadExtras(); render(); };
 
+/* ---- helpers de valor/período (globais; usados também no cálculo da comissão) ---- */
+const PERIODO_LBL={almoco:'Almoço',jantar:'Jantar',ambos:'Almoço e Jantar'};
+function valorPorPeriodo(tipo){ return tipo==='dobra'?Number(S.config?.valor_dobra||0):Number(S.config?.valor_extra_diaria||0); }
+function periodosUnit(s){ return s.periodo==='ambos'?2:1; }
+function custoUnit(s){ return periodosUnit(s)*valorPorPeriodo(s.tipo); }
+function pessoaUnit(s){ return s.tipo_pessoa==='funcionario'?(s.funcionarios?.nome||'Funcionário'):s.tipo_pessoa==='freelancer'?(s.nome_freelancer||'Freelancer'):'— a definir —'; }
+function extraFuncPeriodo(fid,p){ let v=0; (S.solicitacoes||[]).forEach(s=>{ if(s.provisionado && s.tipo_pessoa==='funcionario' && s.funcionario_id===fid && s.data>=p.data_inicio && s.data<=p.data_fim) v+=custoUnit(s); }); return v; }
+
+async function reloadSolic(){ const {data}=await sb.from('solicitacoes_extra').select('*, setores(nome), funcionarios(nome)').eq('restaurante_id',S.restaurante.id).order('data',{ascending:false}); S.solicitacoes=data||[]; }
+window.mudarMesExtras=function(delta){ let m=extrasMes.mes+delta,a=extrasMes.ano; if(m<1){m=12;a--;} if(m>12){m=1;a++;} extrasMes={ano:a,mes:m}; render(); };
+
+/* ---- badges ---- */
+function tipoBadgeED(t){ return t==='dobra'?'<span class="badge bg-purple-100 text-purple-700">Dobra</span>':'<span class="badge bg-blue-100 text-blue-700">Extra</span>'; }
+function periodoBadge(p){ return `<span class="badge bg-slate-100 text-slate-600">${PERIODO_LBL[p]||p}</span>`; }
+function ggBadge(s){ return s.status_gg==='aprovado'?'<span class="badge bg-green-100 text-green-700">GG ✓</span>':s.status_gg==='reprovado'?'<span class="badge bg-rose-100 text-rose-700">GG ✗</span>':'<span class="badge bg-slate-100 text-slate-500">GG pend.</span>'; }
+function rhBadge(s){ return s.status_rh==='aprovado'?'<span class="badge bg-green-100 text-green-700">RH ✓</span>':s.status_rh==='reprovado'?'<span class="badge bg-rose-100 text-rose-700">RH ✗</span>':'<span class="badge bg-slate-100 text-slate-500">RH pend.</span>'; }
+
+/* ---- aprovação RH (individual por unidade) → provisão quando GG e RH aprovam ---- */
+function mergeFinal(g,r){ if(g==='reprovado'||r==='reprovado') return {status_final:'reprovado',provisionado:false}; if(g==='aprovado'&&r==='aprovado') return {status_final:'provisionado',provisionado:true}; return {status_final:'pendente',provisionado:false}; }
+window.aprovarRH=async function(id,ok){
+  const s=S.solicitacoes.find(x=>x.id===id); if(!s)return;
+  let motivo=null; if(!ok) motivo=prompt('Motivo da reprovação (opcional):')||'';
+  const upd={ status_rh: ok?'aprovado':'reprovado', aprovado_rh_por:S.perfil?.nome||S.session?.user?.email||'RH', aprovado_rh_em:new Date().toISOString() };
+  if(!ok) upd.motivo_recusa=motivo;
+  const m=mergeFinal(s.status_gg, upd.status_rh); upd.status_final=m.status_final; upd.provisionado=m.provisionado;
+  const { error }=await sb.from('solicitacoes_extra').update(upd).eq('id',id); if(error){ alert('Erro: '+error.message); return; }
+  await reloadSolic(); render();
+};
+window.excluirSolic=async function(id){ if(!confirm('Excluir esta unidade de extra?'))return; await sb.from('solicitacoes_extra').delete().eq('id',id); await reloadSolic(); render(); };
+
+/* ===================== EXTRAS (RH: calendário, custo, provisão) ===================== */
 window._viewExtras=function(){
   const {ano,mes}=extrasMes; const pref=`${ano}-${String(mes).padStart(2,'0')}`;
-  const doMes=S.extras.filter(e=>e.data.startsWith(pref));
-  const aprov=doMes.filter(e=>e.status==='Aprovado'); const pend=doMes.filter(e=>e.status==='Pendente');
-  const totalQtd=aprov.reduce((a,e)=>a+e.quantidade,0); const custo=aprov.reduce((a,e)=>a+e.quantidade*Number(e.diaria),0);
-  const diasComExtra=new Set(aprov.map(e=>e.data)).size;
-  const kpis=[['EXTRAS CONTRATADOS',totalQtd,`em ${diasComExtra} dias`,'text-blue-600'],['CUSTO TOTAL',money(custo),'qtd × diária (aprovados)','text-slate-900'],['PENDENTES',pend.length,pend.length?'aguardando líder':'tudo aprovado',pend.length?'text-amber-600':'text-green-600'],['MÉDIA/DIA ATIVO',diasComExtra?(totalQtd/diasComExtra).toFixed(1):'0','extras/dia','text-slate-900']];
+  const ativos=s=>s.status_gg!=='reprovado'&&s.status_rh!=='reprovado';
+  const doMes=S.solicitacoes.filter(s=>s.data.startsWith(pref));
+  const doMesAtivos=doMes.filter(ativos);
+  const qtdExtra=doMesAtivos.filter(s=>s.tipo==='extra').length;
+  const qtdDobra=doMesAtivos.filter(s=>s.tipo==='dobra').length;
+  const provMes=doMes.filter(s=>s.provisionado);
+  const custoMes=provMes.reduce((a,s)=>a+custoUnit(s),0);
+  const byMonth={}; S.solicitacoes.filter(s=>s.provisionado).forEach(s=>{ const k=s.data.slice(0,7); byMonth[k]=(byMonth[k]||0)+custoUnit(s); });
+  const meses=Object.keys(byMonth); const media=meses.length?meses.reduce((a,k)=>a+byMonth[k],0)/meses.length:0;
+  const diffPct=media>0?((custoMes-media)/media*100):0; const acima=custoMes>media;
+  const vsMediaTxt=media>0?`${acima?'+':''}${diffPct.toFixed(0)}% vs média`:'sem histórico';
+  const pendRH=doMes.filter(s=>s.status_rh==='pendente'&&s.status_gg==='aprovado').length;
+  const kpis=[
+    ['EXTRAS NO MÊS',qtdExtra,`${new Set(doMesAtivos.filter(s=>s.tipo==='extra').map(s=>s.data)).size} dias`,'text-blue-600'],
+    ['DOBRAS NO MÊS',qtdDobra,`${new Set(doMesAtivos.filter(s=>s.tipo==='dobra').map(s=>s.data)).size} dias`,'text-purple-600'],
+    ['CUSTO PROVISIONADO',money(custoMes),`${provMes.length} unidades`,'text-slate-900'],
+    ['VS. MÉDIA MENSAL',vsMediaTxt,`média ${money(media)}`,acima?'text-rose-600':'text-green-600'],
+  ];
   const first=new Date(ano,mes-1,1); const startDow=first.getDay(); const dim=new Date(ano,mes,0).getDate();
   const cells=[]; for(let i=0;i<startDow;i++)cells.push(null); for(let d=1;d<=dim;d++)cells.push(d); while(cells.length%7)cells.push(null);
-  const qtdDia=d=>extrasDoDia(`${pref}-${String(d).padStart(2,'0')}`).filter(e=>e.status==='Aprovado').reduce((a,e)=>a+e.quantidade,0);
-  const maxQ=Math.max(1,...Array.from({length:dim},(_,i)=>qtdDia(i+1)));
+  const doDia=d=>doMesAtivos.filter(s=>s.data===`${pref}-${String(d).padStart(2,'0')}`);
+  const maxQ=Math.max(1,...Array.from({length:dim},(_,i)=>doDia(i+1).length));
   const calendar=card(`<div class="p-5">
       <div class="flex items-center justify-between mb-4"><h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4 text-blue-600"></i>${MESES_F[mes-1]} / ${ano}</h3>
         <div class="flex gap-1"><button onclick="mudarMesExtras(-1)" class="p-2 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-left" class="w-4 h-4"></i></button><button onclick="mudarMesExtras(1)" class="p-2 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-right" class="w-4 h-4"></i></button></div></div>
       <div class="grid grid-cols-7 gap-1.5 mb-1">${DOW3.map(d=>`<div class="text-center text-xs font-semibold ${['Dom','Sáb'].includes(d)?'text-blue-500':'text-slate-400'}">${d}</div>`).join('')}</div>
       <div class="grid grid-cols-7 gap-1.5">${cells.map(d=>{ if(!d) return `<div class="h-20 rounded bg-slate-50/50"></div>`;
-        const ds=`${pref}-${String(d).padStart(2,'0')}`; const itens=extrasDoDia(ds); const q=qtdDia(d);
-        const cst=itens.filter(e=>e.status==='Aprovado').reduce((a,e)=>a+e.quantidade*Number(e.diaria),0);
-        const hasPend=itens.some(e=>e.status==='Pendente'); const ratio=q/maxQ; const claro=q&&ratio>0.33;
+        const itens=doDia(d); const q=itens.length;
+        const ex=itens.filter(s=>s.tipo==='extra').length; const db=itens.filter(s=>s.tipo==='dobra').length;
+        const cst=itens.filter(s=>s.provisionado).reduce((a,s)=>a+custoUnit(s),0);
+        const hasPend=itens.some(s=>!s.provisionado); const ratio=q/maxQ; const claro=q&&ratio>0.33;
         const bg=q===0?'bg-white':ratio>0.66?'bg-blue-600':ratio>0.33?'bg-blue-400':'bg-blue-100';
-        const tip=itens.length?`title="${itens.map(e=>e.quantidade+'× '+e.funcao+' ('+(e.setores?.nome||'')+') — '+e.status).join('\\n').replace(/"/g,'')}"`:'';
-        return `<div ${tip} class="h-20 rounded border border-slate-200 p-1.5 flex flex-col ${bg} ${q?'cursor-help':''}">
-          <div class="flex justify-between items-start"><span class="text-xs font-semibold ${claro?'text-white':'text-slate-500'}">${d}</span>${hasPend?'<span class="w-2 h-2 rounded-full bg-amber-400"></span>':''}</div>
-          ${q?`<div class="mt-auto"><div class="${claro?'text-white':'text-blue-700'} text-lg font-bold leading-none">${q}</div><div class="text-[9px] ${claro?'text-blue-100':'text-slate-400'}">${money(cst)}</div></div>`:''}
+        return `<div class="h-20 rounded border border-slate-200 p-1.5 flex flex-col ${bg}">
+          <div class="flex justify-between items-start"><span class="text-xs font-semibold ${claro?'text-white':'text-slate-500'}">${d}</span>${hasPend?'<span class="w-2 h-2 rounded-full bg-amber-400" title="pendente"></span>':''}</div>
+          ${q?`<div class="mt-auto leading-none"><div class="${claro?'text-white':'text-blue-700'} text-sm font-bold">${ex?ex+'E':''}${ex&&db?' ':''}${db?db+'D':''}</div><div class="text-[9px] ${claro?'text-blue-100':'text-slate-400'}">${money(cst)}</div></div>`:''}
         </div>`;}).join('')}</div>
-      <p class="text-[11px] text-slate-400 mt-3">Cor = quantidade de extras. Ponto âmbar = há pendência. Passe o mouse para detalhes.</p></div>`);
-  const form=card(`<div class="p-5"><h3 class="font-bold text-slate-900 mb-1 flex items-center gap-2"><i data-feather="user-plus" class="w-4 h-4 text-blue-600"></i>Aprovar extra</h3>
-      <p class="text-xs text-slate-500 mb-4">Lançamento do líder ao contratar um extra.</p>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label class="text-xs text-slate-500 block mb-1">Data</label><input id="ex_data" type="date" value="${ano}-${String(mes).padStart(2,'0')}-15" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
-        <div><label class="text-xs text-slate-500 block mb-1">Setor</label><select id="ex_setor" class="w-full px-2 py-2 border border-slate-200 rounded text-sm">${S.setores.map(s=>`<option value="${s.id}">${s.nome}</option>`).join('')}</select></div>
-        <div><label class="text-xs text-slate-500 block mb-1">Função</label><input id="ex_funcao" placeholder="Garçom Extra" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
-        <div><label class="text-xs text-slate-500 block mb-1">Quantidade</label><input id="ex_qtd" type="number" min="1" value="1" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
-        <div><label class="text-xs text-slate-500 block mb-1">Diária (R$)</label><input id="ex_diaria" type="number" value="120" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
-        <div><label class="text-xs text-slate-500 block mb-1">Líder</label><input id="ex_lider" placeholder="Nome do líder" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
-      </div>
-      <button onclick="addExtra()" class="mt-4 w-full px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center justify-center gap-2"><i data-feather="check" class="w-4 h-4"></i>Registrar e aprovar</button></div>`);
-  const lista=card(`<div class="p-5"><h3 class="font-bold text-slate-900 mb-4 flex items-center gap-2"><i data-feather="list" class="w-4 h-4 text-blue-600"></i>Extras do mês</h3>
-      <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-2 py-2 text-left">Data</th><th class="px-2 py-2 text-left">Setor</th><th class="px-2 py-2 text-left">Função</th><th class="px-2 py-2 text-center">Qtd</th><th class="px-2 py-2 text-right">Diária</th><th class="px-2 py-2 text-right">Total</th><th class="px-2 py-2 text-left">Líder</th><th class="px-2 py-2 text-center">Status</th><th class="px-2 py-2"></th></tr></thead><tbody>
-      ${doMes.slice().sort((a,b)=>a.data.localeCompare(b.data)).map(e=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
-        <td class="px-2 py-1.5 font-medium">${e.data.slice(8,10)}/${e.data.slice(5,7)}</td><td class="px-2 py-1.5">${setorBadge(e.setores?.nome)}</td><td class="px-2 py-1.5 text-slate-600">${e.funcao}</td>
-        <td class="px-2 py-1.5 text-center font-semibold">${e.quantidade}</td><td class="px-2 py-1.5 text-right text-slate-500">${money(e.diaria)}</td><td class="px-2 py-1.5 text-right font-semibold">${money(e.quantidade*Number(e.diaria))}</td><td class="px-2 py-1.5 text-slate-600">${e.lider||'—'}</td>
-        <td class="px-2 py-1.5 text-center">${e.status==='Aprovado'?'<span class="badge bg-green-100 text-green-700">Aprovado</span>':`<button onclick="setExtraStatus(${e.id},'Aprovado')" class="badge bg-amber-100 text-amber-700 hover:bg-amber-200">Aprovar ✓</button>`}</td>
-        <td class="px-2 py-1.5 text-center"><button onclick="excluirExtra(${e.id})" class="text-red-400 hover:text-red-600"><i data-feather="trash-2" class="w-3.5 h-3.5"></i></button></td>
-      </tr>`).join('')||'<tr><td colspan="9" class="text-center text-slate-400 py-6">Nenhum extra neste mês.</td></tr>'}
+      <p class="text-[11px] text-slate-400 mt-3"><strong>E</strong> = extras · <strong>D</strong> = dobras (unidades) · valor = provisionado. Ponto âmbar = ainda pendente.</p></div>`);
+  const lista=card(`<div class="p-5"><h3 class="font-bold text-slate-900 mb-4 flex items-center gap-2"><i data-feather="check-square" class="w-4 h-4 text-blue-600"></i>Unidades do mês — aprovação do RH ${pendRH?`<span class="badge bg-amber-100 text-amber-700">${pendRH} aguardando RH</span>`:''}</h3>
+      <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-2 py-2 text-left">Data</th><th class="px-2 py-2 text-left">Tipo</th><th class="px-2 py-2 text-left">Período</th><th class="px-2 py-2 text-left">Setor</th><th class="px-2 py-2 text-left">Pessoa</th><th class="px-2 py-2 text-right">Custo</th><th class="px-2 py-2 text-center">GG</th><th class="px-2 py-2 text-center">RH</th><th class="px-2 py-2 text-center">Ação</th></tr></thead><tbody>
+      ${doMes.length?doMes.slice().sort((a,b)=>a.data.localeCompare(b.data)).map(s=>{
+        const podeRH=s.status_rh==='pendente'&&s.status_gg!=='reprovado';
+        const acao=s.provisionado?'<span class="badge bg-emerald-100 text-emerald-700">Provisionado</span>'
+          :(s.status_gg==='reprovado'||s.status_rh==='reprovado')?`<span class="badge bg-rose-100 text-rose-700">Reprovado</span>`
+          :podeRH?`<div class="flex gap-1 justify-center"><button onclick="aprovarRH(${s.id},true)" class="badge bg-green-100 text-green-700 hover:bg-green-200" ${s.status_gg!=='aprovado'?'title="Provisiona só após o GG aprovar"':''}>Aprovar ✓</button><button onclick="aprovarRH(${s.id},false)" class="badge bg-rose-100 text-rose-700 hover:bg-rose-200">✗</button></div>`
+          :'<span class="badge bg-amber-100 text-amber-700">Aguardando</span>';
+        return `<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+          <td class="px-2 py-1.5 font-medium">${s.data.slice(8,10)}/${s.data.slice(5,7)}</td>
+          <td class="px-2 py-1.5">${tipoBadgeED(s.tipo)}</td>
+          <td class="px-2 py-1.5">${periodoBadge(s.periodo)}</td>
+          <td class="px-2 py-1.5">${setorBadge(s.setores?.nome)}</td>
+          <td class="px-2 py-1.5 text-slate-600">${s.tipo_pessoa?pessoaUnit(s):'<span class="text-slate-400">— a definir —</span>'}</td>
+          <td class="px-2 py-1.5 text-right font-semibold">${money(custoUnit(s))}</td>
+          <td class="px-2 py-1.5 text-center">${ggBadge(s)}</td>
+          <td class="px-2 py-1.5 text-center">${rhBadge(s)}</td>
+          <td class="px-2 py-1.5 text-center">${acao}</td>
+        </tr>`;}).join(''):'<tr><td colspan="9" class="text-center text-slate-400 py-6">Nenhuma solicitação neste mês.</td></tr>'}
       </tbody></table></div>
-      <div class="mt-3 text-[11px] text-slate-500 flex items-center gap-2"><i data-feather="link" class="w-3.5 h-3.5"></i>Custo dos aprovados (${money(custo)}) alimenta "Gasto com extras" na Comissão.</div></div>`);
-  return pageHeader('Extras','Calendário de extras contratados — aprovados pelos líderes')
+      <div class="mt-3 text-[11px] text-slate-500 flex items-center gap-2"><i data-feather="link" class="w-3.5 h-3.5"></i>Provisão acontece quando <strong>GG</strong> e <strong>RH</strong> aprovam a unidade. Custo provisionado (${money(custoMes)}) alimenta "Gasto com extras" na Comissão.</div></div>`);
+  const freel=provMes.filter(s=>s.tipo_pessoa==='freelancer');
+  const func=provMes.filter(s=>s.tipo_pessoa==='funcionario');
+  const totFreel=freel.reduce((a,s)=>a+custoUnit(s),0); const totFunc=func.reduce((a,s)=>a+custoUnit(s),0);
+  const relFreel=card(`<div class="p-5"><div class="flex items-center justify-between mb-3"><h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="dollar-sign" class="w-4 h-4 text-amber-600"></i>Freelancers a pagar no dia (${MESES_F[mes-1]})</h3><button onclick="window.print()" class="px-3 py-1.5 border border-slate-200 rounded text-xs hover:bg-slate-100 flex items-center gap-1"><i data-feather="printer" class="w-3.5 h-3.5"></i>Imprimir</button></div>
+      <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-2 py-2 text-left">Data</th><th class="px-2 py-2 text-left">Nome</th><th class="px-2 py-2 text-left">CPF</th><th class="px-2 py-2 text-left">Tipo</th><th class="px-2 py-2 text-left">Período</th><th class="px-2 py-2 text-right">Valor</th></tr></thead><tbody>
+      ${freel.length?freel.slice().sort((a,b)=>a.data.localeCompare(b.data)).map(s=>`<tr class="border-b border-slate-100"><td class="px-2 py-1.5">${s.data.slice(8,10)}/${s.data.slice(5,7)}</td><td class="px-2 py-1.5 font-medium">${s.nome_freelancer||'—'}</td><td class="px-2 py-1.5 text-slate-500">${s.cpf_freelancer||'—'}</td><td class="px-2 py-1.5">${tipoBadgeED(s.tipo)}</td><td class="px-2 py-1.5">${periodoBadge(s.periodo)}</td><td class="px-2 py-1.5 text-right font-semibold">${money(custoUnit(s))}</td></tr>`).join(''):'<tr><td colspan="6" class="text-center text-slate-400 py-5">Nenhum freelancer provisionado.</td></tr>'}
+      </tbody>${freel.length?`<tfoot><tr class="bg-slate-50 font-bold"><td colspan="5" class="px-2 py-2 text-right">Total</td><td class="px-2 py-2 text-right text-amber-700">${money(totFreel)}</td></tr></tfoot>`:''}</table></div>
+      ${func.length?`<p class="text-[11px] text-slate-500 mt-3 flex items-center gap-2"><i data-feather="users" class="w-3.5 h-3.5"></i>${func.length} unidade(s) de <strong>funcionários</strong> (${money(totFunc)}) entram na <strong>comissão quinzenal</strong> do período.</p>`:''}
+      </div>`);
+  return pageHeader('Extras (RH)','Calendário, custo provisionado e provisão de pagamento')
     + `<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">${kpis.map(k=>card(`<div class="p-5"><p class="text-xs text-slate-500 font-semibold mb-2">${k[0]}</p><p class="text-2xl font-bold ${k[3]}">${k[1]}</p><p class="text-xs text-slate-400 mt-2">${k[2]}</p></div>`)).join('')}</div>`
-    + `<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4"><div class="col-span-2">${calendar}</div><div>${form}</div></div>` + lista;
+    + calendar + `<div class="mt-4"></div>` + lista + `<div class="mt-4"></div>` + relFreel;
 };
 </script>
 <script>
@@ -1119,7 +1163,7 @@ window.criarUsuario=async function(btn){
   }catch(e){ alert('Erro: '+(e.message||e)); }
 };
 window._viewUsuarios = function(){
-  const papeis=[['admin','Administrador'],['rh','RH'],['lider','Líder'],['viewer','Visualizador']];
+  const papeis=[['admin','Administrador'],['rh','RH'],['lider','Líder'],['gerente','Gerente Geral'],['viewer','Visualizador']];
   const formNovo = novoUserOpen ? card(`<div class="p-5 mb-4 border-2 border-blue-200">
       <h3 class="font-bold text-slate-900 mb-4 flex items-center gap-2"><i data-feather="user-plus" class="w-4 h-4 text-blue-600"></i>Novo usuário</h3>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1145,7 +1189,8 @@ window._viewUsuarios = function(){
         <p class="mb-1"><strong>Acessos:</strong></p>
         <p>• <strong>Administrador</strong>: tudo, incluindo Configurações e Usuários.</p>
         <p>• <strong>RH</strong>: cadastro, ponto, extras, comissão, ranking, relatórios (não edita Configurações).</p>
-        <p>• <strong>Líder</strong>: lança ponto e aprova extras; vê dashboard e relatórios.</p>
+        <p>• <strong>Líder</strong>: lança ponto; solicita extras/dobras pela página externa (solicitar.html).</p>
+        <p>• <strong>Gerente Geral</strong>: aprova/reprova extras pela página externa (aprovar.html).</p>
         <p>• <strong>Visualizador</strong>: só leitura (dashboard, comissão, relatórios).</p>
         <p class="mt-2 text-slate-400">Novos usuários são criados no painel do Supabase (Authentication → Users) e aparecem aqui para você definir o papel.</p>
       </div>`);
