@@ -372,14 +372,15 @@ function viewStub(titulo){
 
 /* ===================== MODAL CADASTRO ===================== */
 function abrirCadastro(id){
-  if(id==null){ modalCad={id:null, nome:'', cargo_id:S.cargos[0]?.id, status:'Normal', regime:'CLT', salario:2059.95, minimo_garantido:0, adiantamento:true, beneficios:0}; }
-  else { const f=S.funcionarios.find(x=>x.id===id); modalCad={id:f.id, nome:f.nome, cargo_id:f.cargo_id, status:f.status, regime:f.regime, salario:f.salario, minimo_garantido:f.minimo_garantido, adiantamento:f.adiantamento, beneficios:f.beneficios}; }
+  if(id==null){ modalCad={id:null, nome:'', cargo_id:S.cargos[0]?.id, status:'Normal', regime:'CLT', salario:2499.50, minimo_garantido:0, adiantamento:true, beneficios:0, data_admissao:'', data_nascimento:''}; }
+  else { const f=S.funcionarios.find(x=>x.id===id); modalCad={id:f.id, nome:f.nome, cargo_id:f.cargo_id, status:f.status, regime:f.regime, salario:f.salario, minimo_garantido:f.minimo_garantido, adiantamento:f.adiantamento, beneficios:f.beneficios, data_admissao:f.data_admissao||'', data_nascimento:f.data_nascimento||''}; }
   render();
 }
 function fecharModal(){ modalCad=null; render(); }
 async function salvarCadastro(){
   const d={ nome:val('cad_nome').trim(), cargo_id:+val('cad_cargo'), status:val('cad_status'), regime:val('cad_regime'),
     salario:+val('cad_salario')||0, minimo_garantido:+val('cad_minimo')||0, adiantamento:val('cad_adiantamento')==='sim', beneficios:+val('cad_beneficios')||0,
+    data_admissao:val('cad_admissao')||null, data_nascimento:val('cad_nascimento')||null,
     restaurante_id:S.restaurante.id };
   if(!d.nome){ alert('Informe o nome.'); return; }
   let err;
@@ -408,6 +409,8 @@ function modalHTML(){
         ${field('Status', `<select id="cad_status" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${opt(['Normal','Processo de Admissão','Extra','Processo de Desligamento'], m.status)}</select>`)}
         ${field('Regime', `<select id="cad_regime" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${opt(['CLT','PJ','Contrato de Experiência','Sem Regime','Sócio'], m.regime)}</select>`)}
         ${field('Adiantamento', `<select id="cad_adiantamento" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${opt([{value:'sim',label:'sim'},{value:'nao',label:'não'}], m.adiantamento?'sim':'nao')}</select>`)}
+        ${field('Data de admissão', `<input id="cad_admissao" type="date" value="${m.data_admissao||''}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
+        ${field('Data de nascimento', `<input id="cad_nascimento" type="date" value="${m.data_nascimento||''}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
         ${field('Salário (R$)', `<input id="cad_salario" type="number" step="0.01" value="${m.salario}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
         ${field('Mínimo garantido (R$)', `<input id="cad_minimo" type="number" step="0.01" value="${m.minimo_garantido}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
         ${field('Benefícios (R$)', `<input id="cad_beneficios" type="number" step="0.01" value="${m.beneficios}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
