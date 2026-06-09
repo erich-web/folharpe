@@ -173,10 +173,11 @@ function datasPadraoMes(ano, mes, tipo){
   return {ini:ymdStr(new Date(ano,mes-2,26)), fim:ymdStr(new Date(ano,mes-1,9))};
 }
 async function criarPeriodo(){
-  const tipo=val('np_tipo')||'oficial', ini=val('np_inicio'), fim=val('np_fim');
+  const f=npForm||{};
+  const tipo=val('np_tipo')||f.tipo||'oficial', ini=val('np_inicio')||f.ini, fim=val('np_fim')||f.fim;
   if(!ini||!fim){ alert('Informe as datas de início e fim da apuração.'); return; }
   if(fim<ini){ alert('A data fim não pode ser anterior ao início.'); return; }
-  const funcId = tipo==='rescisao' ? (+val('np_func')||null) : null;
+  const funcId = tipo==='rescisao' ? (+(val('np_func')||f.func)||null) : null;
   if(tipo==='rescisao' && !funcId){ alert('Escolha o funcionário da rescisão.'); return; }
   // reaproveita período existente com mesmo tipo + datas (+ funcionário, p/ rescisão)
   const ex=S.periodos.find(p=>p.tipo_pagamento===tipo && p.data_inicio===ini && p.data_fim===fim && (tipo!=='rescisao'||p.funcionario_id===funcId));
@@ -615,20 +616,21 @@ function calcComissao(){
 const TIPO_PAG={oficial:'Oficial', adiantamento:'Adiantamento', outro:'Outro', rescisao:'Rescisão', decimo_terceiro_1:'13º 1ª parcela', decimo_terceiro_2:'13º 2ª parcela'};
 const TIPO_BADGE={oficial:'bg-blue-100 text-blue-700', adiantamento:'bg-amber-100 text-amber-700', outro:'bg-slate-200 text-slate-700', rescisao:'bg-rose-100 text-rose-700', decimo_terceiro_1:'bg-emerald-100 text-emerald-700', decimo_terceiro_2:'bg-emerald-100 text-emerald-700'};
 let anoSel=new Date().getFullYear();
+let npForm=null; // estado do formulário de período (persiste entre renders)
 function seletorPeriodo(){
   const p=S.periodoAtual, hoje=new Date();
-  const tipoV=p?p.tipo_pagamento:'oficial';
-  const ini=p?p.data_inicio:`${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-10`;
-  const fim=p?p.data_fim:ini;
+  if(!npForm){ const di=p?p.data_inicio:`${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-10`;
+    npForm={tipo:p?p.tipo_pagamento:'oficial', ini:di, fim:p?p.data_fim:di, func:p?.funcionario_id||''}; }
+  const tipoV=npForm.tipo;
   const opt=(v,l)=>`<option value="${v}" ${v===tipoV?'selected':''}>${l}</option>`;
   const tipoRes=tipoV==='rescisao';
   const criar=podeEscrever('comissao')?`<div class="flex flex-wrap items-center gap-2">
-      <select id="np_tipo" onchange="render()" class="px-2 py-2 border border-slate-200 rounded text-sm">${opt('oficial','Oficial')}${opt('adiantamento','Adiantamento')}${opt('decimo_terceiro_1','13º 1ª parcela')}${opt('decimo_terceiro_2','13º 2ª parcela')}${opt('rescisao','Rescisão')}${opt('outro','Outro')}</select>
-      ${tipoRes?`<select id="np_func" class="px-2 py-2 border border-rose-300 bg-rose-50 rounded text-sm max-w-[180px]" title="funcionário da rescisão"><option value="">— funcionário —</option>${S.funcionarios.map(f=>`<option value="${f.id}" ${p&&p.funcionario_id===f.id?'selected':''}>${f.nome}</option>`).join('')}</select>`:''}
+      <select id="np_tipo" onchange="npForm.tipo=this.value;render()" class="px-2 py-2 border border-slate-200 rounded text-sm">${opt('oficial','Oficial')}${opt('adiantamento','Adiantamento')}${opt('decimo_terceiro_1','13º 1ª parcela')}${opt('decimo_terceiro_2','13º 2ª parcela')}${opt('rescisao','Rescisão')}${opt('outro','Outro')}</select>
+      ${tipoRes?`<select id="np_func" onchange="npForm.func=this.value" class="px-2 py-2 border border-rose-300 bg-rose-50 rounded text-sm max-w-[180px]" title="funcionário da rescisão"><option value="">— funcionário —</option>${S.funcionarios.map(f=>`<option value="${f.id}" ${String(npForm.func)===String(f.id)?'selected':''}>${f.nome}</option>`).join('')}</select>`:''}
       <label class="text-xs text-slate-500">apuração</label>
-      <input id="np_inicio" type="date" value="${ini}" class="px-2 py-2 border border-slate-200 rounded text-sm">
+      <input id="np_inicio" type="date" value="${npForm.ini}" onchange="npForm.ini=this.value" class="px-2 py-2 border border-slate-200 rounded text-sm">
       <span class="text-slate-400 text-xs">a</span>
-      <input id="np_fim" type="date" value="${fim}" class="px-2 py-2 border border-slate-200 rounded text-sm">
+      <input id="np_fim" type="date" value="${npForm.fim}" onchange="npForm.fim=this.value" class="px-2 py-2 border border-slate-200 rounded text-sm">
       <button onclick="criarPeriodo()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-1"><i data-feather="play" class="w-4 h-4"></i>Calcular</button>
     </div>`:'';
   return card(`<div class="p-4 flex flex-wrap items-center gap-3">
