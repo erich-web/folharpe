@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Solicitar Extras · Amauri</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/feather-icons"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>.badge{display:inline-flex;align-items:center;padding:1px 8px;border-radius:9999px;font-size:11px;font-weight:600}.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px}.animate-fade{animation:f .2s ease}@keyframes f{from{opacity:0;transform:translateY(4px)}to{opacity:1}}</style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+<div id="root"></div>
+<script>
+const SUPABASE_URL='https://kzizdoydveqvxycekxla.supabase.co';
+const SUPABASE_KEY='sb_publishable_VTPAgxA-SpD21Fb9kHxVjg_bOkcFrXa';
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+const PERIODO_LBL={almoco:'Almoço',jantar:'Jantar',ambos:'Almoço e Jantar'};
+const DOWF=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+const S={session:null,perfil:null,setores:[],funcionarios:[],minhas:[],erro:null,loading:true,pessoa:'depois',avulsas:[],ok:null};
+const money=v=>'R$ '+(Number(v||0)).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const val=id=>(document.getElementById(id)||{}).value;
+const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const setorNome=id=>(S.setores.find(s=>s.id===id)||{}).nome||'—';
+
+async function boot(){
+  const {data:{session}}=await sb.auth.getSession(); S.session=session;
+  if(session){ await carregar(); }
+  S.loading=false; render();
+}
+sb.auth.onAuthStateChange((_e,session)=>{ S.session=session; });
+
+async function entrar(){
+  S.erro=null; const email=val('login_email'), senha=val('login_senha');
+  const {error}=await sb.auth.signInWithPassword({email,password:senha});
+  if(error){ S.erro='E-mail ou senha inválidos.'; render(); return; }
+  const {data:{session}}=await sb.auth.getSession(); S.session=session; S.loading=true; render();
+  await carregar(); S.loading=false; render();
+}
+async function sair(){ await sb.auth.signOut(); S.session=null; S.perfil=null; render(); }
+
+async function carregar(){
+  const uid=S.session.user.id;
+  const prof=await sb.from('profiles').select('*').eq('id',uid).single(); S.perfil=prof.data;
+  const [set,fun,minhas]=await Promise.all([
+    sb.from('setores').select('id,nome').eq('restaurante_id',1).order('ordem'),
+    sb.from('funcionarios').select('id,nome').eq('restaurante_id',1).order('nome'),
+    sb.from('solicitacoes_extra').select('*, setores(nome), funcionarios(nome)').eq('solicitante_uid',uid).order('data',{ascending:false}).limit(40),
+  ]);
+  S.setores=set.data||[]; S.funcionarios=fun.data||[]; S.minhas=minhas.data||[];
+}
+function podeSolicitar(){ return ['lider','rh','admin','gerente'].includes(S.perfil?.papel); }
+
+window.setPessoa=function(v){ S.pessoa=v; render(); };
+window.addAvulsa=function(){ const d=val('av_data'); if(!d)return; if(!S.avulsas.includes(d))S.avulsas.push(d); S.avulsas.sort(); render(); };
+window.delAvulsa=function(d){ S.avulsas=S.avulsas.filter(x=>x!==d); render(); };
+
+function datasSelecionadas(){
+  const set=new Set();
+  const ini=val('r_ini'),fim=val('r_fim');
+  const dows=[...document.querySelectorAll('.dow:checked')].map(c=>+c.value);
+  if(ini&&fim&&fim>=ini){ let d=new Date(ini+'T00:00:00'); const e=new Date(fim+'T00:00:00'); while(d<=e){ if(!dows.length||dows.includes(d.getDay())) set.add(ymd(d)); d.setDate(d.getDate()+1); } }
+  S.avulsas.forEach(x=>set.add(x));
+  return [...set].sort();
+}
+window.atualizarPreview=function(){ const el=document.getElementById('preview'); if(el){ const n=datasSelecionadas().length; const q=+val('sol_qtd')||1; el.textContent=`${n} dia(s) × ${q} = ${n*q} unidade(s)`; } };
+
+window.enviar=async function(btn){
+  const datas=datasSelecionadas();
+  if(!datas.length){ alert('Selecione ao menos um dia (intervalo+dias da semana ou datas avulsas).'); return; }
+  const tipo=val('sol_tipo'), periodo=val('sol_periodo'), setor_id=+val('sol_setor')||null, qtd=Math.max(1,+val('sol_qtd')||1), obs=val('sol_obs')||null;
+  let tipo_pessoa=null, funcionario_id=null, nome_freelancer=null, cpf_freelancer=null;
+  if(S.pessoa==='funcionario'){ tipo_pessoa='funcionario'; funcionario_id=+val('sol_func')||null; if(!funcionario_id){ alert('Escolha o funcionário.'); return; } }
+  else if(S.pessoa==='freelancer'){ tipo_pessoa='freelancer'; nome_freelancer=val('sol_nome')||''; cpf_freelancer=val('sol_cpf')||null; if(!nome_freelancer){ alert('Informe o nome do freelancer.'); return; } }
+  const rows=[];
+  datas.forEach(data=>{ for(let i=0;i<qtd;i++) rows.push({ restaurante_id:1, tipo, setor_id, data, quantidade:1, periodo, tipo_pessoa, funcionario_id, nome_freelancer, cpf_freelancer, observacao:obs, solicitante:S.perfil?.nome||S.session.user.email, solicitante_uid:S.session.user.id }); });
+  if(btn){ btn.disabled=true; btn.textContent='Enviando…'; }
+  const {error}=await sb.from('solicitacoes_extra').insert(rows);
+  if(error){ alert('Erro: '+error.message); if(btn){btn.disabled=false;} render(); return; }
+  S.avulsas=[]; S.ok=`${rows.length} solicitação(ões) enviada(s)! Aguardando Gerente Geral e RH.`;
+  await carregar(); render(); setTimeout(()=>{S.ok=null;},6000);
+};
+
+function ggBadge(s){ return s.status_gg==='aprovado'?'<span class="badge bg-green-100 text-green-700">GG ✓</span>':s.status_gg==='reprovado'?'<span class="badge bg-rose-100 text-rose-700">GG ✗</span>':'<span class="badge bg-slate-100 text-slate-500">GG pend.</span>'; }
+function rhBadge(s){ return s.status_rh==='aprovado'?'<span class="badge bg-green-100 text-green-700">RH ✓</span>':s.status_rh==='reprovado'?'<span class="badge bg-rose-100 text-rose-700">RH ✗</span>':'<span class="badge bg-slate-100 text-slate-500">RH pend.</span>'; }
+function tipoBadge(t){ return t==='dobra'?'<span class="badge bg-purple-100 text-purple-700">Dobra</span>':'<span class="badge bg-blue-100 text-blue-700">Extra</span>'; }
+function finalBadge(s){ if(s.status_gg==='reprovado'||s.status_rh==='reprovado')return '<span class="badge bg-rose-100 text-rose-700">Reprovado</span>'; if(s.provisionado)return '<span class="badge bg-emerald-100 text-emerald-700">Provisionado</span>'; return '<span class="badge bg-amber-100 text-amber-700">Pendente</span>'; }
+
+function viewLogin(){
+  return `<div class="min-h-screen flex items-center justify-center p-4"><div class="w-full max-w-sm">
+    <div class="flex flex-col items-center mb-6"><div class="w-14 h-14 bg-gradient-to-br from-blue-600 to-blue-700 rounded-xl flex items-center justify-center mb-3"><i data-feather="user-plus" class="text-white w-7 h-7"></i></div>
+      <h1 class="text-xl font-bold">Solicitar Extras</h1><p class="text-sm text-slate-500">Mercearia Amauri · acesso do líder</p></div>
+    <div class="card p-6">${S.erro?`<div class="mb-4 p-3 rounded text-sm bg-red-50 text-red-700 border border-red-200">${S.erro}</div>`:''}
+      <label class="text-xs font-medium text-slate-500 block mb-1">E-mail</label>
+      <input id="login_email" type="email" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-3" placeholder="voce@gruporpe.com.br">
+      <label class="text-xs font-medium text-slate-500 block mb-1">Senha</label>
+      <input id="login_senha" type="password" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-4" placeholder="••••••••" onkeydown="if(event.key==='Enter')entrar()">
+      <button onclick="entrar()" class="w-full px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">Entrar</button>
+    </div><p class="text-center text-xs text-slate-400 mt-4">Grupo RPE</p></div></div>`;
+}
+
+function viewForm(){
+  const dowChecks=DOWF.map((d,i)=>`<label class="flex items-center gap-1 text-xs"><input type="checkbox" class="dow" value="${i}" ${i>=1&&i<=6?'checked':''} onchange="atualizarPreview()">${d}</label>`).join('');
+  const avChips=S.avulsas.map(d=>`<span class="badge bg-blue-100 text-blue-700 mr-1 mb-1">${d.slice(8,10)}/${d.slice(5,7)} <button onclick="delAvulsa('${d}')" class="ml-1">✕</button></span>`).join('')||'<span class="text-xs text-slate-400">nenhuma</span>';
+  const pessoaExtra = S.pessoa==='funcionario'
+    ? `<div class="mt-2"><label class="text-xs text-slate-500 block mb-1">Funcionário</label><select id="sol_func" class="w-full px-2 py-2 border border-slate-200 rounded text-sm">${S.funcionarios.map(f=>`<option value="${f.id}">${f.nome}</option>`).join('')}</select></div>`
+    : S.pessoa==='freelancer'
+    ? `<div class="mt-2 grid grid-cols-2 gap-2"><div><label class="text-xs text-slate-500 block mb-1">Nome do freelancer</label><input id="sol_nome" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div><div><label class="text-xs text-slate-500 block mb-1">CPF</label><input id="sol_cpf" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div></div>`
+    : '';
+  const pBtn=(v,l)=>`<button onclick="setPessoa('${v}')" class="px-3 py-1.5 rounded text-xs font-medium border ${S.pessoa===v?'bg-blue-600 text-white border-blue-600':'bg-white text-slate-600 border-slate-200'}">${l}</button>`;
+  const form=`<div class="card p-5 mb-4">
+    <h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="send" class="w-4 h-4 text-blue-600"></i>Nova solicitação</h3>
+    <p class="text-xs text-slate-500 mb-4">Monte a escala. Cada extra vira uma unidade aprovada individualmente pelo Gerente Geral e pelo RH.</p>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div><label class="text-xs text-slate-500 block mb-1">Tipo</label><select id="sol_tipo" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"><option value="extra">Extra</option><option value="dobra">Dobra</option></select></div>
+      <div><label class="text-xs text-slate-500 block mb-1">Período</label><select id="sol_periodo" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"><option value="almoco">Almoço (1×8h)</option><option value="jantar">Jantar (1×8h)</option><option value="ambos">Almoço e Jantar (2×8h)</option></select></div>
+      <div><label class="text-xs text-slate-500 block mb-1">Setor</label><select id="sol_setor" class="w-full px-2 py-2 border border-slate-200 rounded text-sm">${S.setores.map(s=>`<option value="${s.id}">${s.nome}</option>`).join('')}</select></div>
+      <div><label class="text-xs text-slate-500 block mb-1">Qtd por dia</label><input id="sol_qtd" type="number" min="1" value="1" oninput="atualizarPreview()" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+    </div>
+    <div class="mt-3"><label class="text-xs text-slate-500 block mb-1">Pessoa (opcional)</label><div class="flex gap-2 flex-wrap">${pBtn('depois','Definir depois')}${pBtn('funcionario','Funcionário existente')}${pBtn('freelancer','Freelancer')}</div>${pessoaExtra}</div>
+
+    <div class="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div class="bg-slate-50 rounded-lg p-3">
+        <p class="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-1"><i data-feather="repeat" class="w-3.5 h-3.5"></i>Intervalo + dias da semana</p>
+        <div class="grid grid-cols-2 gap-2 mb-2"><div><label class="text-[10px] text-slate-500 block">Início</label><input id="r_ini" type="date" onchange="atualizarPreview()" class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"></div><div><label class="text-[10px] text-slate-500 block">Fim</label><input id="r_fim" type="date" onchange="atualizarPreview()" class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"></div></div>
+        <div class="flex gap-2 flex-wrap">${dowChecks}</div>
+      </div>
+      <div class="bg-slate-50 rounded-lg p-3">
+        <p class="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-1"><i data-feather="calendar" class="w-3.5 h-3.5"></i>Datas avulsas</p>
+        <div class="flex gap-2 mb-2"><input id="av_data" type="date" class="flex-1 px-2 py-1.5 border border-slate-200 rounded text-sm"><button onclick="addAvulsa()" class="px-3 py-1.5 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">+ Add</button></div>
+        <div>${avChips}</div>
+      </div>
+    </div>
+    <div class="mt-3"><label class="text-xs text-slate-500 block mb-1">Observação (opcional)</label><input id="sol_obs" placeholder="Ex.: evento, reforço de salão…" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+    <div class="mt-3 flex items-center justify-between"><span id="preview" class="text-xs text-slate-500 font-medium">0 dia(s)</span>
+      <button onclick="enviar(this)" class="px-5 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="send" class="w-4 h-4"></i>Enviar solicitação</button></div>
+  </div>`;
+  const minhas=`<div class="card p-5"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="list" class="w-4 h-4 text-blue-600"></i>Minhas solicitações</h3>
+    <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-2 py-2 text-left">Data</th><th class="px-2 py-2 text-left">Tipo</th><th class="px-2 py-2 text-left">Período</th><th class="px-2 py-2 text-left">Setor</th><th class="px-2 py-2 text-left">Pessoa</th><th class="px-2 py-2 text-center">GG</th><th class="px-2 py-2 text-center">RH</th><th class="px-2 py-2 text-center">Status</th></tr></thead><tbody>
+    ${S.minhas.length?S.minhas.map(s=>`<tr class="border-b border-slate-100"><td class="px-2 py-1.5 font-medium">${s.data.slice(8,10)}/${s.data.slice(5,7)}</td><td class="px-2 py-1.5">${tipoBadge(s.tipo)}</td><td class="px-2 py-1.5"><span class="badge bg-slate-100 text-slate-600">${PERIODO_LBL[s.periodo]||s.periodo}</span></td><td class="px-2 py-1.5">${s.setores?.nome||'—'}</td><td class="px-2 py-1.5 text-slate-600">${s.tipo_pessoa==='funcionario'?(s.funcionarios?.nome||'Func.'):s.tipo_pessoa==='freelancer'?(s.nome_freelancer||'Freela'):'—'}</td><td class="px-2 py-1.5 text-center">${ggBadge(s)}</td><td class="px-2 py-1.5 text-center">${rhBadge(s)}</td><td class="px-2 py-1.5 text-center">${finalBadge(s)}</td></tr>`).join(''):'<tr><td colspan="8" class="text-center text-slate-400 py-6">Nenhuma solicitação ainda.</td></tr>'}
+    </tbody></table></div></div>`;
+  return `<div class="max-w-5xl mx-auto p-4 md:p-8 animate-fade">
+    <div class="flex items-center justify-between mb-5"><div><h1 class="text-2xl font-bold">Solicitar Extras</h1><p class="text-sm text-slate-500">Olá, ${S.perfil?.nome||S.session.user.email}</p></div>
+      <button onclick="sair()" class="text-slate-500 hover:text-red-600 flex items-center gap-1 text-sm"><i data-feather="log-out" class="w-4 h-4"></i>Sair</button></div>
+    ${S.ok?`<div class="mb-4 p-3 rounded text-sm bg-emerald-50 text-emerald-700 border border-emerald-200">${S.ok}</div>`:''}
+    ${podeSolicitar()?form+minhas:'<div class="card p-6 text-center text-slate-500">Seu usuário não tem permissão para solicitar extras. Fale com o RH.</div>'}
+  </div>`;
+}
+
+function render(){
+  const root=document.getElementById('root');
+  if(S.loading){ root.innerHTML='<div class="min-h-screen flex items-center justify-center text-slate-400">Carregando…</div>'; return; }
+  root.innerHTML=S.session?viewForm():viewLogin();
+  feather.replace(); atualizarPreview();
+}
+boot();
+</script>
+</body>
+</html>

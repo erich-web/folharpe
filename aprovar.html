@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aprovar Extras · Gerente Geral</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/feather-icons"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>.badge{display:inline-flex;align-items:center;padding:1px 8px;border-radius:9999px;font-size:11px;font-weight:600}.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px}.animate-fade{animation:f .2s ease}@keyframes f{from{opacity:0;transform:translateY(4px)}to{opacity:1}}</style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+<div id="root"></div>
+<script>
+const SUPABASE_URL='https://kzizdoydveqvxycekxla.supabase.co';
+const SUPABASE_KEY='sb_publishable_VTPAgxA-SpD21Fb9kHxVjg_bOkcFrXa';
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+const PERIODO_LBL={almoco:'Almoço',jantar:'Jantar',ambos:'Almoço e Jantar'};
+const S={session:null,perfil:null,config:null,sol:[],erro:null,loading:true,sel:new Set()};
+const money=v=>'R$ '+(Number(v||0)).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const val=id=>(document.getElementById(id)||{}).value;
+function valorPorPeriodo(t){ return t==='dobra'?Number(S.config?.valor_dobra||0):Number(S.config?.valor_extra_diaria||0); }
+function custoUnit(s){ return (s.periodo==='ambos'?2:1)*valorPorPeriodo(s.tipo); }
+
+async function boot(){ const {data:{session}}=await sb.auth.getSession(); S.session=session; if(session)await carregar(); S.loading=false; render(); }
+async function entrar(){ S.erro=null; const {error}=await sb.auth.signInWithPassword({email:val('login_email'),password:val('login_senha')}); if(error){ S.erro='E-mail ou senha inválidos.'; render(); return; } const {data:{session}}=await sb.auth.getSession(); S.session=session; S.loading=true; render(); await carregar(); S.loading=false; render(); }
+async function sair(){ await sb.auth.signOut(); S.session=null; S.perfil=null; render(); }
+async function carregar(){
+  const uid=S.session.user.id;
+  const prof=await sb.from('profiles').select('*').eq('id',uid).single(); S.perfil=prof.data;
+  const [cfg,sol]=await Promise.all([
+    sb.from('config_remuneracao').select('valor_dobra,valor_extra_diaria').eq('restaurante_id',1).single(),
+    sb.from('solicitacoes_extra').select('*, setores(nome), funcionarios(nome)').eq('restaurante_id',1).order('data',{ascending:true}).limit(300),
+  ]);
+  S.config=cfg.data; S.sol=sol.data||[];
+}
+function podeAprovar(){ return ['gerente','admin'].includes(S.perfil?.papel); }
+
+function mergeFinal(g,r){ if(g==='reprovado'||r==='reprovado')return {status_final:'reprovado',provisionado:false}; if(g==='aprovado'&&r==='aprovado')return {status_final:'provisionado',provisionado:true}; return {status_final:'pendente',provisionado:false}; }
+async function decidir(id,ok,motivo){
+  const s=S.sol.find(x=>x.id===id); if(!s)return;
+  const upd={ status_gg:ok?'aprovado':'reprovado', aprovado_gg_por:S.perfil?.nome||S.session.user.email, aprovado_gg_em:new Date().toISOString() };
+  if(!ok)upd.motivo_recusa=motivo||'';
+  const m=mergeFinal(upd.status_gg,s.status_rh); upd.status_final=m.status_final; upd.provisionado=m.provisionado;
+  const {error}=await sb.from('solicitacoes_extra').update(upd).eq('id',id); if(error){ alert('Erro: '+error.message); return false; }
+  return true;
+}
+window.aprovarGG=async function(id,ok){ let motivo=null; if(!ok)motivo=prompt('Motivo da reprovação (opcional):')||''; if(await decidir(id,ok,motivo)){ await carregar(); render(); } };
+window.toggleSel=function(id){ if(S.sel.has(id))S.sel.delete(id); else S.sel.add(id); render(); };
+window.selTodos=function(ids){ const all=ids.every(i=>S.sel.has(i)); ids.forEach(i=>all?S.sel.delete(i):S.sel.add(i)); render(); };
+window.aprovarLote=async function(ok){ const ids=[...S.sel]; if(!ids.length){ alert('Selecione ao menos uma unidade.'); return; } let motivo=null; if(!ok)motivo=prompt('Motivo da reprovação (vale para todas):')||''; for(const id of ids){ await decidir(id,ok,motivo); } S.sel.clear(); await carregar(); render(); };
+
+function tipoBadge(t){ return t==='dobra'?'<span class="badge bg-purple-100 text-purple-700">Dobra</span>':'<span class="badge bg-blue-100 text-blue-700">Extra</span>'; }
+function rhBadge(s){ return s.status_rh==='aprovado'?'<span class="badge bg-green-100 text-green-700">RH ✓</span>':s.status_rh==='reprovado'?'<span class="badge bg-rose-100 text-rose-700">RH ✗</span>':'<span class="badge bg-slate-100 text-slate-500">RH pend.</span>'; }
+function pessoa(s){ return s.tipo_pessoa==='funcionario'?(s.funcionarios?.nome||'Funcionário'):s.tipo_pessoa==='freelancer'?(s.nome_freelancer||'Freelancer'):'— a definir —'; }
+
+function viewLogin(){
+  return `<div class="min-h-screen flex items-center justify-center p-4"><div class="w-full max-w-sm">
+    <div class="flex flex-col items-center mb-6"><div class="w-14 h-14 bg-gradient-to-br from-blue-600 to-blue-700 rounded-xl flex items-center justify-center mb-3"><i data-feather="check-square" class="text-white w-7 h-7"></i></div>
+      <h1 class="text-xl font-bold">Aprovar Extras</h1><p class="text-sm text-slate-500">Mercearia Amauri · Gerente Geral</p></div>
+    <div class="card p-6">${S.erro?`<div class="mb-4 p-3 rounded text-sm bg-red-50 text-red-700 border border-red-200">${S.erro}</div>`:''}
+      <label class="text-xs font-medium text-slate-500 block mb-1">E-mail</label>
+      <input id="login_email" type="email" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-3" placeholder="voce@gruporpe.com.br">
+      <label class="text-xs font-medium text-slate-500 block mb-1">Senha</label>
+      <input id="login_senha" type="password" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-4" placeholder="••••••••" onkeydown="if(event.key==='Enter')entrar()">
+      <button onclick="entrar()" class="w-full px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">Entrar</button>
+    </div><p class="text-center text-xs text-slate-400 mt-4">Grupo RPE</p></div></div>`;
+}
+
+function unitCard(s,acoes){
+  return `<div class="border border-slate-200 rounded-lg p-3 ${S.sel.has(s.id)?'ring-2 ring-blue-300':''}">
+    <div class="flex items-center gap-2 flex-wrap text-sm">
+      ${acoes?`<input type="checkbox" ${S.sel.has(s.id)?'checked':''} onchange="toggleSel(${s.id})">`:''}
+      <span class="font-semibold">${s.data.slice(8,10)}/${s.data.slice(5,7)}</span> ${tipoBadge(s.tipo)}
+      <span class="badge bg-slate-100 text-slate-600">${PERIODO_LBL[s.periodo]||s.periodo}</span>
+      ${s.setores?.nome?`<span class="badge bg-slate-100 text-slate-600">${s.setores.nome}</span>`:''}
+      <span class="text-slate-600">${pessoa(s)}</span>
+      <span class="text-slate-500">${money(custoUnit(s))}</span>
+      <span class="ml-auto text-xs text-slate-400">${s.solicitante||''} · ${rhBadge(s)}</span>
+    </div>
+    ${s.observacao?`<p class="text-xs text-slate-500 mt-1">${s.observacao}</p>`:''}
+    ${acoes||''}</div>`;
+}
+
+function viewApp(){
+  const pend=S.sol.filter(s=>s.status_gg==='pendente');
+  const hist=S.sol.filter(s=>s.status_gg!=='pendente').sort((a,b)=>b.data.localeCompare(a.data)).slice(0,40);
+  const ids=pend.map(s=>s.id);
+  const fila=pend.length?pend.map(s=>unitCard(s,`<div class="flex gap-2 mt-2">
+      <button onclick="aprovarGG(${s.id},true)" class="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 flex items-center gap-1"><i data-feather="check" class="w-3.5 h-3.5"></i>Aprovar</button>
+      <button onclick="aprovarGG(${s.id},false)" class="px-3 py-1.5 bg-rose-100 text-rose-700 rounded text-xs font-medium hover:bg-rose-200 flex items-center gap-1"><i data-feather="x" class="w-3.5 h-3.5"></i>Reprovar</button>
+    </div>`)).join('<div class="my-2"></div>'):'<p class="text-center text-slate-400 py-6">Nenhuma unidade aguardando aprovação. 🎉</p>';
+  const histHtml=hist.length?hist.map(s=>unitCard(s,`<div class="mt-1">${s.provisionado?'<span class="badge bg-emerald-100 text-emerald-700">Provisionado</span>':s.status_gg==='reprovado'?'<span class="badge bg-rose-100 text-rose-700">Reprovado pelo GG</span>':'<span class="badge bg-green-100 text-green-700">Aprovado pelo GG</span>'}${s.motivo_recusa?` <span class="text-xs text-rose-600">· ${s.motivo_recusa}</span>`:''}</div>`)).join('<div class="my-2"></div>'):'<p class="text-center text-slate-400 py-4">Sem histórico.</p>';
+  const loteBar=pend.length?`<div class="flex items-center gap-2 mb-3 flex-wrap">
+      <button onclick="selTodos([${ids.join(',')}])" class="px-3 py-1.5 border border-slate-200 rounded text-xs hover:bg-slate-100">Selecionar todos</button>
+      <button onclick="aprovarLote(true)" class="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700">Aprovar selecionados (${S.sel.size})</button>
+      <button onclick="aprovarLote(false)" class="px-3 py-1.5 bg-rose-100 text-rose-700 rounded text-xs font-medium hover:bg-rose-200">Reprovar selecionados</button>
+    </div>`:'';
+  return `<div class="max-w-4xl mx-auto p-4 md:p-8 animate-fade">
+    <div class="flex items-center justify-between mb-5"><div><h1 class="text-2xl font-bold">Aprovar Extras</h1><p class="text-sm text-slate-500">Gerente Geral · ${S.perfil?.nome||S.session.user.email}</p></div>
+      <button onclick="sair()" class="text-slate-500 hover:text-red-600 flex items-center gap-1 text-sm"><i data-feather="log-out" class="w-4 h-4"></i>Sair</button></div>
+    ${podeAprovar()?`
+      <div class="card p-5 mb-4"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="inbox" class="w-4 h-4 text-blue-600"></i>Aguardando aprovação (${pend.length})</h3>${loteBar}${fila}</div>
+      <div class="card p-5"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="clock" class="w-4 h-4 text-slate-400"></i>Histórico recente</h3>${histHtml}</div>
+    `:'<div class="card p-6 text-center text-slate-500">Seu usuário não é Gerente Geral. Fale com o RH.</div>'}
+  </div>`;
+}
+
+function render(){ const root=document.getElementById('root'); if(S.loading){ root.innerHTML='<div class="min-h-screen flex items-center justify-center text-slate-400">Carregando…</div>'; return; } root.innerHTML=S.session?viewApp():viewLogin(); feather.replace(); }
+boot();
+</script>
+</body>
+</html>
