@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -55,14 +56,7 @@ window.setPessoa=function(v){ S.pessoa=v; render(); };
 window.addAvulsa=function(){ const d=val('av_data'); if(!d)return; if(!S.avulsas.includes(d))S.avulsas.push(d); S.avulsas.sort(); render(); };
 window.delAvulsa=function(d){ S.avulsas=S.avulsas.filter(x=>x!==d); render(); };
 
-function datasSelecionadas(){
-  const set=new Set();
-  const ini=val('r_ini'),fim=val('r_fim');
-  const dows=[...document.querySelectorAll('.dow:checked')].map(c=>+c.value);
-  if(ini&&fim&&fim>=ini){ let d=new Date(ini+'T00:00:00'); const e=new Date(fim+'T00:00:00'); while(d<=e){ if(!dows.length||dows.includes(d.getDay())) set.add(ymd(d)); d.setDate(d.getDate()+1); } }
-  S.avulsas.forEach(x=>set.add(x));
-  return [...set].sort();
-}
+function datasSelecionadas(){ return [...new Set(S.avulsas)].sort(); }
 window.atualizarPreview=function(){ const el=document.getElementById('preview'); if(el){ const n=datasSelecionadas().length; const q=+val('sol_qtd')||1; el.textContent=`${n} dia(s) × ${q} = ${n*q} unidade(s)`; } };
 
 window.enviar=async function(btn){
@@ -100,7 +94,6 @@ function viewLogin(){
 }
 
 function viewForm(){
-  const dowChecks=DOWF.map((d,i)=>`<label class="flex items-center gap-1 text-xs"><input type="checkbox" class="dow" value="${i}" ${i>=1&&i<=6?'checked':''} onchange="atualizarPreview()">${d}</label>`).join('');
   const avChips=S.avulsas.map(d=>`<span class="badge bg-blue-100 text-blue-700 mr-1 mb-1">${d.slice(8,10)}/${d.slice(5,7)} <button onclick="delAvulsa('${d}')" class="ml-1">✕</button></span>`).join('')||'<span class="text-xs text-slate-400">nenhuma</span>';
   const pessoaExtra = S.pessoa==='funcionario'
     ? `<div class="mt-2"><label class="text-xs text-slate-500 block mb-1">Funcionário</label><select id="sol_func" class="w-full px-2 py-2 border border-slate-200 rounded text-sm">${S.funcionarios.map(f=>`<option value="${f.id}">${f.nome}</option>`).join('')}</select></div>`
@@ -119,15 +112,10 @@ function viewForm(){
     </div>
     <div class="mt-3"><label class="text-xs text-slate-500 block mb-1">Pessoa (opcional)</label><div class="flex gap-2 flex-wrap">${pBtn('depois','Definir depois')}${pBtn('funcionario','Funcionário existente')}${pBtn('freelancer','Freelancer')}</div>${pessoaExtra}</div>
 
-    <div class="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div class="mt-4">
       <div class="bg-slate-50 rounded-lg p-3">
-        <p class="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-1"><i data-feather="repeat" class="w-3.5 h-3.5"></i>Intervalo + dias da semana</p>
-        <div class="grid grid-cols-2 gap-2 mb-2"><div><label class="text-[10px] text-slate-500 block">Início</label><input id="r_ini" type="date" onchange="atualizarPreview()" class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"></div><div><label class="text-[10px] text-slate-500 block">Fim</label><input id="r_fim" type="date" onchange="atualizarPreview()" class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"></div></div>
-        <div class="flex gap-2 flex-wrap">${dowChecks}</div>
-      </div>
-      <div class="bg-slate-50 rounded-lg p-3">
-        <p class="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-1"><i data-feather="calendar" class="w-3.5 h-3.5"></i>Datas avulsas</p>
-        <div class="flex gap-2 mb-2"><input id="av_data" type="date" class="flex-1 px-2 py-1.5 border border-slate-200 rounded text-sm"><button onclick="addAvulsa()" class="px-3 py-1.5 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">+ Add</button></div>
+        <p class="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-1"><i data-feather="calendar" class="w-3.5 h-3.5"></i>Dias da solicitação</p>
+        <div class="flex gap-2 mb-2"><input id="av_data" type="date" class="flex-1 px-2 py-1.5 border border-slate-200 rounded text-sm"><button onclick="addAvulsa()" class="px-3 py-1.5 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">+ Adicionar dia</button></div>
         <div>${avChips}</div>
       </div>
     </div>
