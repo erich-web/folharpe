@@ -36,7 +36,7 @@ const S = {
   restaurante:null, config:null,
   setores:[], cargos:[], funcionarios:[], rateio:[], ranking:[], ciclos:[],
   periodos:[], periodoAtual:null, ponto:[], extras:[], rankingPeriodo:[], pagamentos:[], usuarios:[],
-  adiantAnterior:{}, adiantAnteriorPeriodo:null,
+  adiantAnt:{}, adiantAntPeriodo:null,
   loading:false, erro:null,
 };
 let current='dashboard';
@@ -133,20 +133,22 @@ async function carregarDados(){
   S.loading=false;
 }
 async function carregarPonto(){
-  S.adiantAnterior={}; S.adiantAnteriorPeriodo=null;
+  S.adiantAnt={}; S.adiantAntPeriodo=null;
   if(!S.periodoAtual){ S.ponto=[]; S.rankingPeriodo=[]; return; }
   const [pt, rp] = await Promise.all([
     sb.from('controle_ponto').select('*').eq('periodo_id',S.periodoAtual.id),
     sb.from('ranking_periodo').select('*').eq('periodo_id',S.periodoAtual.id),
   ]);
   S.ponto=pt.data||[]; S.rankingPeriodo=rp.data||[];
-  // Para "oficial": busca o último adiantamento (já fechado) p/ deduzir
+  // OFICIAL: puxa o último adiantamento do mês anterior (salário 40% + comissão guardados)
   if(S.periodoAtual.tipo_pagamento==='oficial'){
-    const ant=S.periodos.filter(x=>x.tipo_pagamento==='adiantamento' && x.data_inicio<=S.periodoAtual.data_fim)
-      .sort((a,b)=>b.data_inicio.localeCompare(a.data_inicio))[0];
-    if(ant){ S.adiantAnteriorPeriodo=ant;
-      const { data }=await sb.from('comissao_resultado').select('funcionario_id,total').eq('periodo_id',ant.id);
-      (data||[]).forEach(r=>{ S.adiantAnterior[r.funcionario_id]=Number(r.total)||0; }); }
+    const p=S.periodoAtual; const mesAnt=p.mes-1>0?p.mes-1:12; const anoAnt=p.mes-1>0?p.ano:p.ano-1;
+    const ant=S.periodos.filter(x=>x.tipo_pagamento==='adiantamento' && x.mes===mesAnt && x.ano===anoAnt)
+      .sort((a,b)=>b.data_inicio.localeCompare(a.data_inicio))[0]
+      || S.periodos.filter(x=>x.tipo_pagamento==='adiantamento' && x.data_inicio<p.data_inicio).sort((a,b)=>b.data_inicio.localeCompare(a.data_inicio))[0];
+    if(ant){ S.adiantAntPeriodo=ant;
+      const { data }=await sb.from('comissao_resultado').select('funcionario_id,adiant_salario,comissao_total').eq('periodo_id',ant.id);
+      (data||[]).forEach(r=>{ S.adiantAnt[r.funcionario_id]={ salario:Number(r.adiant_salario)||0, comissao:Number(r.comissao_total)||0 }; }); }
   }
 }
 async function selectPeriodo(id){
@@ -155,17 +157,68 @@ async function selectPeriodo(id){
 }
 function diasEntre(ini,fim){ return Math.round((stripT(new Date(fim+'T00:00:00'))-stripT(new Date(ini+'T00:00:00')))/86400000)+1; }
 function ymdStr(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function mesesTrabalhados(dataAdm, ano){
+  if(!dataAdm) return 12;
+  const d=new Date(dataAdm+'T00:00:00'), ya=d.getFullYear();
+  if(ya<ano) return 12; if(ya>ano) return 0;
+  const conta = d.getDate()<=15 ? (12-d.getMonth()) : (12-d.getMonth()-1);
+  return Math.max(0,Math.min(12,conta));
+}
+// datas padrão por mês de pagamento: oficial(5º útil) apura 10–25 do mês anterior; adiantamento(dia 20) apura 26 do anterior a 9
+function datasPadraoMes(ano, mes, tipo){
+  if(tipo==='oficial') return {ini:ymdStr(new Date(ano,mes-2,10)), fim:ymdStr(new Date(ano,mes-2,25))};
+  return {ini:ymdStr(new Date(ano,mes-2,26)), fim:ymdStr(new Date(ano,mes-1,9))};
+}
 async function criarPeriodo(){
   const tipo=val('np_tipo')||'oficial', ini=val('np_inicio'), fim=val('np_fim');
   if(!ini||!fim){ alert('Informe as datas de início e fim da apuração.'); return; }
   if(fim<ini){ alert('A data fim não pode ser anterior ao início.'); return; }
+  const funcId = tipo==='rescisao' ? (+val('np_func')||null) : null;
+  if(tipo==='rescisao' && !funcId){ alert('Escolha o funcionário da rescisão.'); return; }
+  // reaproveita período existente com mesmo tipo + datas (+ funcionário, p/ rescisão)
+  const ex=S.periodos.find(p=>p.tipo_pagamento===tipo && p.data_inicio===ini && p.data_fim===fim && (tipo!=='rescisao'||p.funcionario_id===funcId));
+  if(ex){ S.periodoAtual=ex; await carregarPonto(); render(); return; }
   const d=new Date(ini+'T00:00:00');
-  const rec={ restaurante_id:S.restaurante.id, ciclo_id:null, tipo_pagamento:tipo, ano:d.getFullYear(), mes:d.getMonth()+1,
+  const rec={ restaurante_id:S.restaurante.id, ciclo_id:null, tipo_pagamento:tipo, funcionario_id:funcId, ano:d.getFullYear(), mes:d.getMonth()+1,
     data_inicio:ini, data_fim:fim, dias_periodo:diasEntre(ini,fim),
     taxa_servico_total:0, retencao_pct:Number(S.config.retencao_casa_pct)||33, status:'aberto' };
   const { data, error }=await sb.from('periodos').insert(rec).select('*').single();
   if(error){ alert('Erro ao criar período: '+error.message); return; }
   S.periodoAtual=data; await carregarDados(); render();
+}
+window.abrirMes = async function(val){
+  if(!val) return; const [tipo,mesS]=val.split('|'); const mes=+mesS;
+  const d=datasPadraoMes(anoSel, mes, tipo);
+  const ex=S.periodos.find(p=>p.tipo_pagamento===tipo && p.data_inicio===d.ini && p.data_fim===d.fim);
+  if(ex){ S.periodoAtual=ex; await carregarPonto(); render(); return; }
+  if(!podeEscrever('comissao')){ alert('Esse período ainda não foi criado.'); return; }
+  const di=new Date(d.ini+'T00:00:00');
+  const rec={ restaurante_id:S.restaurante.id, ciclo_id:null, tipo_pagamento:tipo, funcionario_id:null, ano:di.getFullYear(), mes:di.getMonth()+1,
+    data_inicio:d.ini, data_fim:d.fim, dias_periodo:diasEntre(d.ini,d.fim), taxa_servico_total:0, retencao_pct:Number(S.config.retencao_casa_pct)||33, status:'aberto' };
+  const { data, error }=await sb.from('periodos').insert(rec).select('*').single();
+  if(error){ alert('Erro: '+error.message); return; }
+  S.periodoAtual=data; await carregarDados(); render();
+};
+async function gerarPeriodosAno(){
+  if(!confirm('Gerar os 24 períodos (adiantamento + oficial) de '+anoSel+'? Os que já existirem não serão duplicados.')) return;
+  const novos=[];
+  for(let m=1;m<=12;m++){
+    // Adiantamento (dia 20 do mês m): apuração 26 do mês anterior → 9 do mês m
+    const aIni=new Date(anoSel,m-2,26), aFim=new Date(anoSel,m-1,9);
+    // Oficial (5º dia útil do mês m): apuração 10 → 25 do mês anterior
+    const oIni=new Date(anoSel,m-2,10), oFim=new Date(anoSel,m-2,25);
+    [['adiantamento',aIni,aFim],['oficial',oIni,oFim]].forEach(([tp,di,df])=>{
+      const i=ymdStr(di), f=ymdStr(df);
+      if(!S.periodos.some(p=>p.tipo_pagamento===tp&&p.data_inicio===i&&p.data_fim===f))
+        novos.push({ restaurante_id:S.restaurante.id, ciclo_id:null, tipo_pagamento:tp, funcionario_id:null,
+          ano:di.getFullYear(), mes:di.getMonth()+1, data_inicio:i, data_fim:f, dias_periodo:diasEntre(i,f),
+          taxa_servico_total:0, retencao_pct:Number(S.config.retencao_casa_pct)||33, status:'aberto' });
+    });
+  }
+  if(!novos.length){ alert('Todos os períodos do ano já existem.'); return; }
+  const { error }=await sb.from('periodos').insert(novos);
+  if(error){ alert('Erro: '+error.message); return; }
+  await carregarDados(); render(); alert(novos.length+' períodos criados para '+anoSel+'.');
 }
 async function salvarCampoPeriodo(campo,valor){
   if(!S.periodoAtual) return;
@@ -486,56 +539,98 @@ function calcComissao(){
   S.setores.forEach(s=>{const b=distribuida*(ratePct[s.nome]||0)/100; rsPonto[s.nome]=somaZ[s.nome]>0?b/somaZ[s.nome]:0; pool[s.nome]=somaDesc[s.nome]*rsPonto[s.nome]; rsRep[s.nome]=somaFinQ[s.nome]>0?pool[s.nome]/somaFinQ[s.nome]:0;});
   const tipo=p.tipo_pagamento||'oficial';
   const adiantPct=Number(cfg.adiantamento_pct)||40;
+  const dentroPct=Number(cfg.holerite_dentro_pct)/100, foraPct=Number(cfg.holerite_fora_pct)/100;
+  const horasMes=Number(cfg.horas_mes_base)||220;
   rows.forEach(r=>{
     r.comissao=r.finais*rsPonto[r.setor];
     r.repique=r.recebeRepique?r.finais*rsRep[r.setor]:0;
     r.ranking=bonusByFunc[r.f.id]||0;
-    r.comTotal=r.comissao+r.repique+r.ranking;
+    r.comTotal=r.comissao+r.repique+r.ranking;                 // comissão DO PERÍODO
+    const valorHora=horasMes>0?Number(r.f.salario)/horasMes:0;
+    r.hePagar=(r.heMin/60)*valorHora*(1+Number(cfg.adicional_he_pct||0)/100);
+    r.salario=Number(r.f.salario); r.benef=Number(r.f.beneficios||0);
+    r.minComp=0; r.adiantSalario=0; r.adiantSalPago=0; r.adiantComPago=0;
+    r.comissaoTotal=r.comTotal;
+
     if(tipo==='adiantamento'){
-      r.adiantSalario=Number(r.f.salario)*adiantPct/100;
-      r.hePagar=0; r.minComp=0; r.adiantAnterior=0;
-      r.total=r.adiantSalario+r.comTotal;
-      r.aPagar=r.total;
-      r.pagoDentro=r.total; r.pagoFora=0;
-    } else {
-      const horasMes=Number(cfg.horas_mes_base)||220;
-      const valorHora=horasMes>0?Number(r.f.salario)/horasMes:0;
-      r.hePagar=(r.heMin/60)*valorHora*(1+Number(cfg.adicional_he_pct||0)/100);
-      const bruto=Number(r.f.salario)+r.comTotal+Number(r.f.beneficios||0);
-      r.minComp=Math.max(0,Number(r.f.minimo_garantido||0)-bruto);
-      r.adiantSalario=0;
-      r.total=bruto+r.minComp+r.hePagar;
-      r.adiantAnterior=(tipo==='oficial')?(Number(S.adiantAnterior[r.f.id])||0):0;
-      r.aPagar=r.total-r.adiantAnterior;
-      r.pagoDentro=Number(r.f.salario)+Number(r.f.beneficios||0)+r.minComp+r.hePagar+r.comTotal*Number(cfg.holerite_dentro_pct)/100;
-      r.pagoFora=r.comTotal*Number(cfg.holerite_fora_pct)/100;
+      r.adiantSalario=r.salario*adiantPct/100;
+      r.holerite=r.adiantSalario+r.benef+r.hePagar;            // holerite dia 20 (sem comissão)
+      r.totalPagar=r.adiantSalario+r.comTotal+r.benef+r.hePagar; // pago de fato no dia 20
+    } else if(tipo==='oficial'){
+      const ant=S.adiantAnt[r.f.id]||{salario:0,comissao:0};
+      r.adiantSalPago=ant.salario; r.adiantComPago=ant.comissao;
+      r.comissaoOficial=r.comTotal;
+      r.comissaoTotal=r.comissaoOficial+r.adiantComPago;        // total das duas quinzenas
+      r.minComp=Math.max(0,Number(r.f.minimo_garantido||0)-(r.salario+r.comissaoTotal)); // POR FORA
+      r.proventos=r.salario+r.comissaoTotal+r.benef+r.hePagar;
+      r.descontos=r.adiantSalPago+r.adiantComPago;
+      r.holerite=r.proventos-r.descontos;                       // líquido do holerite
+      r.totalPagar=r.holerite;
+    } else if(tipo==='rescisao'){
+      const diasTrab=Math.max(0,dias-r.falta);
+      r.salarioProp=r.salario*Math.min(diasTrab,30)/30;         // saldo de salário (proporcional)
+      r.diasTrab=diasTrab;
+      r.holerite=r.salarioProp+r.comTotal+r.benef+r.hePagar;
+      r.totalPagar=r.holerite;
+    } else if(tipo==='decimo_terceiro_1' || tipo==='decimo_terceiro_2'){
+      const anoRef=new Date(p.data_inicio+'T00:00:00').getFullYear();
+      const meses=mesesTrabalhados(r.f.data_admissao, anoRef);
+      r.meses13=meses; r.base13=r.salario*meses/12; const primeira=r.base13*0.5;
+      r.comTotal=0; r.comissaoTotal=0;
+      if(tipo==='decimo_terceiro_1'){ r.parcela13=1; r.inss13=0; r.irrf13=0; r.holerite=primeira; }
+      else { r.parcela13=2; r.inss13=calcINSS(r.base13); r.irrf13=calcIRRF(r.base13-r.inss13); r.holerite=primeira-r.inss13-r.irrf13; }
+      r.totalPagar=r.holerite;
+    } else { // outro: folha cheia
+      r.minComp=Math.max(0,Number(r.f.minimo_garantido||0)-(r.salario+r.comTotal));
+      r.holerite=r.salario+r.comTotal+r.benef+r.hePagar;
+      r.totalPagar=r.holerite;
     }
+    r.comDentro=r.comissaoTotal*dentroPct;                      // vai pro holerite
+    r.comFora=r.comissaoTotal*foraPct;                          // interno
   });
-  return {tipo, dias,taxaTotal,retencao,retPct,extrasTotal,extrasDesc,distribuida,rows,rsPonto,
+  let outRows=rows;
+  if(tipo==='rescisao' && p.funcionario_id) outRows=rows.filter(r=>r.f.id===p.funcionario_id);
+  return {tipo, dias,taxaTotal,retencao,retPct,extrasTotal,extrasDesc,distribuida,rows:outRows,rsPonto,
     bucketRanking:distribuida*rankingPct/100,
-    totalComissao:rows.reduce((a,r)=>a+r.comTotal,0), totalFolha:rows.reduce((a,r)=>a+r.total,0),
-    totalAPagar:rows.reduce((a,r)=>a+(r.aPagar||0),0)};
+    totalComissao:outRows.reduce((a,r)=>a+r.comTotal,0),
+    totalPagar:outRows.reduce((a,r)=>a+(r.totalPagar||0),0),
+    totalHolerite:outRows.reduce((a,r)=>a+(r.holerite||0),0)};
 }
 
-const TIPO_PAG={adiantamento:'Adiantamento', oficial:'Oficial', outro:'Outro', rescisao:'Rescisão'};
-const TIPO_BADGE={adiantamento:'bg-amber-100 text-amber-700', oficial:'bg-blue-100 text-blue-700', outro:'bg-slate-200 text-slate-700', rescisao:'bg-rose-100 text-rose-700'};
+const TIPO_PAG={oficial:'Oficial', adiantamento:'Adiantamento', outro:'Outro', rescisao:'Rescisão', decimo_terceiro_1:'13º 1ª parcela', decimo_terceiro_2:'13º 2ª parcela'};
+const TIPO_BADGE={oficial:'bg-blue-100 text-blue-700', adiantamento:'bg-amber-100 text-amber-700', outro:'bg-slate-200 text-slate-700', rescisao:'bg-rose-100 text-rose-700', decimo_terceiro_1:'bg-emerald-100 text-emerald-700', decimo_terceiro_2:'bg-emerald-100 text-emerald-700'};
+let anoSel=new Date().getFullYear();
 function seletorPeriodo(){
-  const hoje=new Date(); const ini0=`${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-10`;
-  const opts=S.periodos.map(p=>`<option value="${p.id}" ${S.periodoAtual&&p.id===S.periodoAtual.id?'selected':''}>${TIPO_PAG[p.tipo_pagamento]||'Período'} · ${fmtDM(new Date(p.data_inicio+'T00:00:00'))}–${fmtDM(new Date(p.data_fim+'T00:00:00'))}/${p.ano}</option>`).join('');
+  const p=S.periodoAtual, hoje=new Date();
+  const tipoV=p?p.tipo_pagamento:'oficial';
+  const ini=p?p.data_inicio:`${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-10`;
+  const fim=p?p.data_fim:ini;
+  const opt=(v,l)=>`<option value="${v}" ${v===tipoV?'selected':''}>${l}</option>`;
+  const tipoRes=tipoV==='rescisao';
+  // acesso rápido: cada mês do ano × {Oficial, Adiantamento}, com as datas padrão
+  const cy=new Date().getFullYear(); const anos=[...new Set([cy-1,cy,cy+1,...S.periodos.map(x=>x.ano),anoSel])].sort((a,b)=>a-b);
+  const existe=(tp,m)=>{const d=datasPadraoMes(anoSel,m,tp); return S.periodos.some(x=>x.tipo_pagamento===tp&&x.data_inicio===d.ini&&x.data_fim===d.fim);};
+  const mesOpts=[...Array(12)].map((_,i)=>{const m=i+1,nm=MESES_F[i];
+      return `<option value="oficial|${m}">${nm} · Oficial${existe('oficial',m)?' ✓':''}</option><option value="adiantamento|${m}">${nm} · Adiantamento${existe('adiantamento',m)?' ✓':''}</option>`;}).join('');
+  const quick=`<div class="flex items-center gap-2">
+      <select onchange="anoSel=+this.value;render()" class="px-2 py-2 border border-slate-200 rounded text-sm">${anos.map(a=>`<option value="${a}" ${a===anoSel?'selected':''}>${a}</option>`).join('')}</select>
+      <select onchange="abrirMes(this.value)" class="px-2 py-2 border border-slate-200 rounded text-sm max-w-[230px]">
+        <option value="">Ir para o mês…</option>${mesOpts}
+      </select>
+    </div>`;
+  const criar=podeEscrever('comissao')?`<div class="flex flex-wrap items-center gap-2">
+      <span class="text-xs text-slate-500">Novo:</span>
+      <select id="np_tipo" onchange="render()" class="px-2 py-2 border border-slate-200 rounded text-sm">${opt('oficial','Oficial')}${opt('adiantamento','Adiantamento')}${opt('decimo_terceiro_1','13º 1ª parcela')}${opt('decimo_terceiro_2','13º 2ª parcela')}${opt('rescisao','Rescisão')}${opt('outro','Outro')}</select>
+      ${tipoRes?`<select id="np_func" class="px-2 py-2 border border-rose-300 bg-rose-50 rounded text-sm max-w-[180px]" title="funcionário da rescisão"><option value="">— funcionário —</option>${S.funcionarios.map(f=>`<option value="${f.id}" ${p&&p.funcionario_id===f.id?'selected':''}>${f.nome}</option>`).join('')}</select>`:''}
+      <label class="text-xs text-slate-500">apuração</label>
+      <input id="np_inicio" type="date" value="${ini}" class="px-2 py-2 border border-slate-200 rounded text-sm">
+      <span class="text-slate-400 text-xs">a</span>
+      <input id="np_fim" type="date" value="${fim}" class="px-2 py-2 border border-slate-200 rounded text-sm">
+      <button onclick="criarPeriodo()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-1"><i data-feather="play" class="w-4 h-4"></i>Calcular</button>
+    </div>`:'';
   return card(`<div class="p-4 flex flex-wrap items-center gap-3">
       <span class="text-sm font-semibold text-slate-700 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4 text-blue-600"></i>Período</span>
-      ${S.periodos.length?`<select onchange="selectPeriodo(this.value)" class="px-3 py-2 border border-slate-200 rounded text-sm">${opts}</select>`:'<span class="text-sm text-slate-400">nenhum período criado</span>'}
-      ${S.periodoAtual?`<span class="badge ${TIPO_BADGE[S.periodoAtual.tipo_pagamento]||'bg-slate-100 text-slate-600'}">${TIPO_PAG[S.periodoAtual.tipo_pagamento]||'—'}</span>`:''}
-      ${podeEscrever('comissao')?`<span class="text-slate-300 hidden sm:inline">|</span>
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="text-xs text-slate-500">Novo:</span>
-        <select id="np_tipo" class="px-2 py-2 border border-slate-200 rounded text-sm"><option value="oficial" selected>Oficial</option><option value="adiantamento">Adiantamento</option><option value="outro">Outro</option></select>
-        <label class="text-xs text-slate-500">apuração</label>
-        <input id="np_inicio" type="date" value="${ini0}" class="px-2 py-2 border border-slate-200 rounded text-sm" title="início">
-        <span class="text-slate-400 text-xs">a</span>
-        <input id="np_fim" type="date" value="${ini0}" class="px-2 py-2 border border-slate-200 rounded text-sm" title="fim">
-        <button onclick="criarPeriodo()" class="px-3 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 flex items-center gap-1"><i data-feather="play" class="w-4 h-4"></i>Calcular</button>
-      </div>`:''}
+      ${quick}<span class="text-slate-300 hidden md:inline">|</span>${criar}
     </div>`,'mb-4');
 }
 
@@ -547,7 +642,7 @@ window._viewComissao = function(){
   const c=calcComissao(); const p=S.periodoAtual;
   const inp=(lb,val,onch,suf='')=>`<div><label class="text-xs font-medium text-slate-500 block mb-1">${lb}</label><div class="flex items-center gap-1"><input type="number" step="0.01" value="${val}" onchange="${onch}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm text-right">${suf?`<span class="text-slate-400 text-sm">${suf}</span>`:''}</div></div>`;
   return header + seletorPeriodo()
-  + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="trending-down" class="w-4 h-4 text-blue-600"></i>Premissas — <span class="badge ${TIPO_BADGE[c.tipo]||''}">${TIPO_PAG[c.tipo]||''}</span> ${fmtData(new Date(p.data_inicio+'T00:00:00'))} a ${fmtData(new Date(p.data_fim+'T00:00:00'))} · ${c.dias} dias${c.tipo==='oficial'&&S.adiantAnteriorPeriodo?` · adiant. de ${fmtDM(new Date(S.adiantAnteriorPeriodo.data_inicio+'T00:00:00'))}`:''}</h3>
+  + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="trending-down" class="w-4 h-4 text-blue-600"></i>Premissas — <span class="badge ${TIPO_BADGE[c.tipo]||''}">${TIPO_PAG[c.tipo]||''}</span> ${fmtData(new Date(p.data_inicio+'T00:00:00'))} a ${fmtData(new Date(p.data_fim+'T00:00:00'))} · ${c.dias} dias${c.tipo==='oficial'&&S.adiantAntPeriodo?` · deduz adiant. ${fmtDM(new Date(S.adiantAntPeriodo.data_inicio+'T00:00:00'))}–${fmtDM(new Date(S.adiantAntPeriodo.data_fim+'T00:00:00'))}`:''}</h3>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         ${inp('Taxa de Serviço Total (R$)', c.taxaTotal, "salvarCampoPeriodo('taxa_servico_total',+this.value).then(()=>render())")}
         ${inp('Retenção da casa', c.retPct, "salvarCampoPeriodo('retencao_pct',+this.value).then(()=>render())",'%')}
@@ -568,59 +663,91 @@ window._viewComissao = function(){
   + tabelaComissao(c);
 };
 function tabelaComissao(c){
-  const pontos=r=>`<td class="px-2 py-2 text-center">${num(r.base,2)}</td><td class="px-2 py-2 text-center">${num(r.Z,2)}</td>
+  const nome=r=>r.f.nome.split(' ').slice(0,2).join(' ');
+  const pts=r=>`<td class="px-2 py-2 text-center">${num(r.base,2)}</td><td class="px-2 py-2 text-center">${num(r.Z,2)}</td>
     <td class="px-2 py-2 text-center ${r.desc>0?'text-red-600 font-semibold':'text-slate-300'}">${r.desc>0?'−'+num(r.desc,2):'—'}</td>
     <td class="px-2 py-2 text-center font-semibold">${num(r.finais,2)}</td>`;
-  const comuns=r=>`<td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${r.f.nome.split(' ').slice(0,2).join(' ')}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pontos(r)}
-    <td class="px-2 py-2 text-right">${money(r.comissao)}</td>
-    <td class="px-2 py-2 text-right ${r.repique>0?'text-green-600':'text-slate-300'}">${r.repique>0?money(r.repique):'—'}</td>
-    <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comTotal)}</td>`;
-  const headComuns=`<th class="px-3 py-3 text-left">Funcionário</th><th class="px-2 py-3 text-left">Setor</th>
-    <th class="px-2 py-3 text-center">Base</th><th class="px-2 py-3 text-center">Qual.</th><th class="px-2 py-3 text-center">Desc.</th><th class="px-2 py-3 text-center">Finais</th>
-    <th class="px-2 py-3 text-right">Comissão</th><th class="px-2 py-3 text-right">Repique</th><th class="px-2 py-3 text-right bg-blue-50">Com.Total</th>`;
+  const headPts=`<th class="px-3 py-3 text-left">Funcionário</th><th class="px-2 py-3 text-left">Setor</th>
+    <th class="px-2 py-3 text-center">Base</th><th class="px-2 py-3 text-center">Qual.</th><th class="px-2 py-3 text-center">Desc.</th><th class="px-2 py-3 text-center">Finais</th>`;
+  const heCell=r=>`<td class="px-2 py-2 text-right ${r.hePagar>0?'text-red-600 font-semibold':'text-slate-300'}" title="${r.heMin?fmtMin(r.heMin)+' a pagar':''}">${r.hePagar>0?money(r.hePagar):'—'}</td>`;
+  const wrap=(head,body,nota)=>card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>
+    <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">${nota}</div>`);
 
   if(c.tipo==='adiantamento'){
-    const adiantPct=num(S.config.adiantamento_pct,0);
-    const totAdiant=c.rows.reduce((a,r)=>a+r.adiantSalario,0), totCom=c.rows.reduce((a,r)=>a+r.comTotal,0);
-    return card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr>
-        <th class="px-3 py-3 text-left">Funcionário</th><th class="px-2 py-3 text-left">Setor</th>
-        <th class="px-2 py-3 text-center">Base</th><th class="px-2 py-3 text-center">Qual.</th><th class="px-2 py-3 text-center">Desc.</th><th class="px-2 py-3 text-center">Finais</th>
-        <th class="px-2 py-3 text-right">Repique</th>
-        <th class="px-3 py-3 text-right bg-amber-50">40% Adiantamento</th><th class="px-3 py-3 text-right bg-green-50">Comissão</th></tr></thead><tbody>
-        ${c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
-          <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${r.f.nome.split(' ').slice(0,2).join(' ')}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pontos(r)}
-          <td class="px-2 py-2 text-right ${r.repique>0?'text-green-600':'text-slate-300'}">${r.repique>0?money(r.repique):'—'}</td>
-          <td class="px-3 py-2 text-right font-bold text-amber-700 bg-amber-50/50">${money(r.adiantSalario)}</td>
-          <td class="px-3 py-2 text-right font-bold text-green-700 bg-green-50/50">${money(r.comTotal)}</td></tr>`).join('')}
-        <tr class="bg-slate-50 font-bold"><td class="px-3 py-2" colspan="7">TOTAIS</td><td class="px-3 py-2 text-right text-amber-700">${money(totAdiant)}</td><td class="px-3 py-2 text-right text-green-700">${money(totCom)}</td></tr>
-        </tbody></table></div>
-        <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200"><strong>40% Adiantamento</strong> = ${adiantPct}% do salário. <strong>Comissão</strong> = comissão do período (com repique e ranking). Pagos separadamente; salário cheio, benefícios, HE e impostos entram no <strong>oficial</strong>.</div>`);
+    const head=headPts+`<th class="px-2 py-3 text-right bg-amber-50">40% Salário</th><th class="px-2 py-3 text-right bg-green-50">Comissão</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE (R$)</th><th class="px-3 py-3 text-right bg-blue-50">Pago no dia 20</th>`;
+    const body=c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+      <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${nome(r)}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pts(r)}
+      <td class="px-2 py-2 text-right font-semibold text-amber-700 bg-amber-50/40">${money(r.adiantSalario)}</td>
+      <td class="px-2 py-2 text-right font-semibold text-green-700 bg-green-50/40">${money(r.comTotal)}</td>
+      <td class="px-2 py-2 text-right ${r.benef?'':'text-slate-300'}">${r.benef?money(r.benef):'—'}</td>${heCell(r)}
+      <td class="px-3 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.totalPagar)}</td></tr>`).join('')
+      +`<tr class="bg-slate-50 font-bold"><td class="px-3 py-2" colspan="6">TOTAIS</td><td class="px-2 py-2 text-right text-amber-700">${money(c.rows.reduce((a,r)=>a+r.adiantSalario,0))}</td><td class="px-2 py-2 text-right text-green-700">${money(c.totalComissao)}</td><td colspan="2"></td><td class="px-3 py-2 text-right text-blue-700">${money(c.totalPagar)}</td></tr>`;
+    return wrap(head,body,`<strong>Holerite do dia 20</strong> mostra 40% do salário + benefícios + HE (a comissão NÃO aparece no holerite do adiantamento — ela é exibida no oficial). A comissão e os 40% ficam guardados para o oficial deduzir.`);
   }
-  // oficial / outro
-  const oficial=c.tipo==='oficial';
-  return card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr>
-      ${headComuns}<th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Mín.Gar.</th><th class="px-2 py-3 text-right">HE (R$)</th>
-      <th class="px-3 py-3 text-right bg-green-50">TOTAL</th><th class="px-2 py-3 text-right bg-indigo-50">Dentro</th><th class="px-2 py-3 text-right bg-indigo-50">Fora</th>
-      ${oficial?'<th class="px-2 py-3 text-right bg-amber-50">Adiant. anterior</th><th class="px-3 py-3 text-right bg-green-100">HOLERITE</th>':''}</tr></thead><tbody>
-      ${c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">${comuns(r)}
-        <td class="px-2 py-2 text-right text-slate-600">${money(r.f.salario)}</td>
-        <td class="px-2 py-2 text-right ${r.minComp>0?'text-amber-600 font-semibold':'text-slate-300'}">${r.minComp>0?'+'+money(r.minComp):'—'}</td>
-        <td class="px-2 py-2 text-right ${r.hePagar>0?'text-red-600 font-semibold':'text-slate-300'}" title="${r.heMin?fmtMin(r.heMin)+' a pagar':''}">${r.hePagar>0?money(r.hePagar):'—'}</td>
-        <td class="px-3 py-2 text-right font-bold text-green-700 bg-green-50/50">${money(r.total)}</td>
-        <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.pagoDentro)}</td>
-        <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.pagoFora)}</td>
-        ${oficial?`<td class="px-2 py-2 text-right ${r.adiantAnterior>0?'text-amber-700 font-semibold bg-amber-50/40':'text-slate-300'}">${r.adiantAnterior>0?'−'+money(r.adiantAnterior):'—'}</td>
-        <td class="px-3 py-2 text-right font-bold text-green-800 bg-green-100/60">${money(r.aPagar)}</td>`:''}
-      </tr>`).join('')}
-      </tbody></table></div>
-      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">${oficial?'<strong>HOLERITE</strong> = TOTAL − adiantamento anterior já pago'+(S.adiantAnteriorPeriodo?` (adiant. de ${fmtDM(new Date(S.adiantAnteriorPeriodo.data_inicio+'T00:00:00'))})`:' — nenhum adiantamento anterior salvo')+'.':'Tipo "Outro": cálculo da folha cheio.'} Repique e ranking entram conforme Ponto/Ranking.</div>`);
+  if(c.tipo==='oficial'){
+    const head=headPts+`<th class="px-2 py-3 text-right">Com. período</th><th class="px-2 py-3 text-right">Com. adiant.</th><th class="px-2 py-3 text-right bg-blue-50">Comissão TOTAL</th>
+      <th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE</th>
+      <th class="px-2 py-3 text-right bg-amber-50">− Adiant. salário</th><th class="px-2 py-3 text-right bg-amber-50">− Adiant. comissão</th>
+      <th class="px-3 py-3 text-right bg-green-100">HOLERITE</th>
+      <th class="px-2 py-3 text-right">Mín.Gar.(fora)</th><th class="px-2 py-3 text-right bg-indigo-50">Com.Dentro</th><th class="px-2 py-3 text-right bg-indigo-50">Com.Fora</th>`;
+    const body=c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+      <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${nome(r)}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pts(r)}
+      <td class="px-2 py-2 text-right">${money(r.comissaoOficial)}</td>
+      <td class="px-2 py-2 text-right ${r.adiantComPago>0?'text-slate-600':'text-slate-300'}">${r.adiantComPago>0?money(r.adiantComPago):'—'}</td>
+      <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comissaoTotal)}</td>
+      <td class="px-2 py-2 text-right text-slate-600">${money(r.salario)}</td>
+      <td class="px-2 py-2 text-right ${r.benef?'':'text-slate-300'}">${r.benef?money(r.benef):'—'}</td>${heCell(r)}
+      <td class="px-2 py-2 text-right ${r.adiantSalPago>0?'text-amber-700 bg-amber-50/40':'text-slate-300'}">${r.adiantSalPago>0?'−'+money(r.adiantSalPago):'—'}</td>
+      <td class="px-2 py-2 text-right ${r.adiantComPago>0?'text-amber-700 bg-amber-50/40':'text-slate-300'}">${r.adiantComPago>0?'−'+money(r.adiantComPago):'—'}</td>
+      <td class="px-3 py-2 text-right font-bold text-green-800 bg-green-100/60">${money(r.holerite)}</td>
+      <td class="px-2 py-2 text-right ${r.minComp>0?'text-rose-600 font-semibold':'text-slate-300'}" title="diferença paga por fora">${r.minComp>0?'+'+money(r.minComp):'—'}</td>
+      <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.comDentro)}</td>
+      <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(r.comFora)}</td></tr>`).join('');
+    return wrap(head,body,`<strong>HOLERITE</strong> = salário total + comissão total + benefícios + HE − (adiant. salário + adiant. comissão). <strong>Comissão total</strong> = período + adiantamento. <strong>Mín.Gar.</strong> = diferença paga <em>por fora</em> (não entra no holerite), comparando salário+comissão com o acordado. ${S.adiantAntPeriodo?'':'<span class="text-amber-600">⚠ Nenhum adiantamento anterior salvo — descontos zerados.</span>'}`);
+  }
+  if(c.tipo==='rescisao'){
+    if(!c.rows.length) return card(`<div class="p-12 text-center text-slate-400"><i data-feather="user-x" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Escolha o funcionário da rescisão no seletor acima e clique em Calcular.</p></div>`);
+    const head=headPts+`<th class="px-2 py-3 text-center">Dias trab.</th><th class="px-2 py-3 text-right bg-rose-50">Salário proporc.</th><th class="px-2 py-3 text-right bg-blue-50">Comissão</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE</th><th class="px-3 py-3 text-right bg-green-100">TOTAL RESCISÃO</th>`;
+    const body=c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+      <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${nome(r)}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pts(r)}
+      <td class="px-2 py-2 text-center">${r.diasTrab}</td>
+      <td class="px-2 py-2 text-right font-semibold text-rose-700 bg-rose-50/40">${money(r.salarioProp)}</td>
+      <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comTotal)}</td>
+      <td class="px-2 py-2 text-right ${r.benef?'':'text-slate-300'}">${r.benef?money(r.benef):'—'}</td>${heCell(r)}
+      <td class="px-3 py-2 text-right font-bold text-green-800 bg-green-100/60">${money(r.holerite)}</td></tr>`).join('');
+    return wrap(head,body,`<strong>Rescisão</strong> = saldo de salário (proporcional: salário × dias trabalhados ÷ 30) + comissão do período + benefícios + HE. Verbas legais (férias, aviso, FGTS) ficam para depois. Ao salvar, o funcionário é marcado como <strong>inativo</strong>.`);
+  }
+  if(c.tipo==='decimo_terceiro_1'||c.tipo==='decimo_terceiro_2'){
+    const seg=c.tipo==='decimo_terceiro_2';
+    const head=`<th class="px-3 py-3 text-left">Funcionário</th><th class="px-2 py-3 text-center">Meses</th><th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Base 13º</th><th class="px-2 py-3 text-right bg-emerald-50">${seg?'2ª parcela (50%)':'1ª parcela (50%)'}</th>${seg?'<th class="px-2 py-3 text-right text-red-600">− INSS</th><th class="px-2 py-3 text-right text-red-600">− IRRF</th>':''}<th class="px-3 py-3 text-right bg-green-100">LÍQUIDO</th>`;
+    const body=c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+      <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${nome(r)}</td>
+      <td class="px-2 py-2 text-center">${r.meses13}/12</td>
+      <td class="px-2 py-2 text-right text-slate-600">${money(r.salario)}</td>
+      <td class="px-2 py-2 text-right">${money(r.base13)}</td>
+      <td class="px-2 py-2 text-right bg-emerald-50/40">${money(r.base13*0.5)}</td>
+      ${seg?`<td class="px-2 py-2 text-right text-red-600">${r.inss13>0?'−'+money(r.inss13):'—'}</td><td class="px-2 py-2 text-right text-red-600">${r.irrf13>0?'−'+money(r.irrf13):'—'}</td>`:''}
+      <td class="px-3 py-2 text-right font-bold text-green-800 bg-green-100/60">${money(r.holerite)}</td></tr>`).join('')
+      +`<tr class="bg-slate-50 font-bold"><td class="px-3 py-2" colspan="${seg?6:4}">TOTAL</td><td class="px-3 py-2 text-right text-green-700">${money(c.totalPagar)}</td></tr>`;
+    return wrap(head,body,`<strong>13º salário</strong> (só salário, sem comissão). Base = salário × meses trabalhados no ano ÷ 12 (admissão; mês com 15+ dias conta cheio). ${seg?'2ª parcela = 50% da base − INSS − IRRF.':'1ª parcela = 50% da base (sem descontos).'}`);
+  }
+  // outro: folha cheia
+  const head=headPts+`<th class="px-2 py-3 text-right bg-blue-50">Comissão</th><th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE</th><th class="px-2 py-3 text-right">Mín.Gar.(fora)</th><th class="px-3 py-3 text-right bg-green-50">TOTAL</th>`;
+  const body=c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+    <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${nome(r)}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pts(r)}
+    <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comTotal)}</td>
+    <td class="px-2 py-2 text-right text-slate-600">${money(r.salario)}</td>
+    <td class="px-2 py-2 text-right ${r.benef?'':'text-slate-300'}">${r.benef?money(r.benef):'—'}</td>${heCell(r)}
+    <td class="px-2 py-2 text-right ${r.minComp>0?'text-rose-600 font-semibold':'text-slate-300'}">${r.minComp>0?'+'+money(r.minComp):'—'}</td>
+    <td class="px-3 py-2 text-right font-bold text-green-700 bg-green-50/50">${money(r.holerite)}</td></tr>`).join('');
+  return wrap(head,body,`Tipo "Outro": folha cheia (salário + comissão + benefícios + HE), sem dedução de adiantamento.`);
 }
 
 window.exportComissaoCSV = function(){
   const c=calcComissao(); if(!c) return; const sep=';';
-  const head=['Funcionário','Setor','Tipo','Pontos Base','Pontos Qualificados','Pontos Descontados','Pontos Finais','Comissão','Repique','Comissão Total','Adiant. 40% salário','Salário','Benefícios','Mínimo Complemento','HE a pagar','TOTAL','Adiant. pago','A PAGAR','Pago Dentro','Pago Fora'];
+  const head=['Funcionário','Setor','Tipo','Base','Qualif.','Desc.','Finais','Comissão período','Comissão adiant.','Comissão TOTAL','40% Salário','Salário','Benefícios','HE','Adiant. salário pago','Adiant. comissão pago','HOLERITE','Mínimo (por fora)','Com.Dentro','Com.Fora'];
   const br=v=>typeof v==='number'?v.toFixed(2).replace('.',','):'"'+String(v).replace(/"/g,'""')+'"';
-  const linhas=c.rows.map(r=>[r.f.nome,r.setor,TIPO_PAG[c.tipo]||c.tipo,r.base,r.Z,r.desc,r.finais,r.comissao,r.repique,r.comTotal,r.adiantSalario||0,r.f.salario,r.f.beneficios||0,r.minComp,r.hePagar,r.total,r.adiantAnterior||0,r.aPagar,r.pagoDentro,r.pagoFora].map(br).join(sep));
+  const linhas=c.rows.map(r=>[r.f.nome,r.setor,TIPO_PAG[c.tipo]||c.tipo,r.base,r.Z,r.desc,r.finais,r.comTotal,r.adiantComPago||0,r.comissaoTotal,r.adiantSalario||0,r.salario,r.benef,r.hePagar,r.adiantSalPago||0,r.adiantComPago||0,r.holerite,r.minComp,r.comDentro,r.comFora].map(br).join(sep));
   const csv='﻿'+[head.join(sep),...linhas].join('\r\n');
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));
   a.download='comissao-'+(c.tipo||'periodo')+'-'+(S.periodoAtual?.data_inicio||'')+'.csv'; a.click(); URL.revokeObjectURL(a.href);
@@ -632,17 +759,24 @@ window.salvarResultadoComissao = async function(){
   const recs=c.rows.map(r=>({ funcionario_id:r.f.id, periodo_id:p.id, setor:r.setor,
     pontos_base:r.base, pontos_qualificados:r.Z, pontos_descontados:r.desc, pontos_finais:r.finais,
     comissao:r.comissao, repique:r.repique, ranking_bonus:r.ranking, comissao_total:r.comTotal,
-    salario:r.f.salario, beneficios:r.f.beneficios||0, minimo_complemento:r.minComp, total:r.total,
-    pago_dentro:r.pagoDentro, pago_fora:r.pagoFora, he_pagar_minutos:r.heMin||0, he_pagar_valor:r.hePagar||0,
-    adiant_salario:r.adiantSalario||0, adiant_anterior:r.adiantAnterior||0, tipo_pagamento:c.tipo }));
+    salario:r.salario, beneficios:r.benef, minimo_complemento:r.minComp, total:r.totalPagar,
+    pago_dentro:r.comDentro, pago_fora:r.comFora, he_pagar_minutos:r.heMin||0, he_pagar_valor:r.hePagar||0,
+    adiant_salario:r.adiantSalario||0, adiant_anterior:(r.adiantSalPago||0)+(r.adiantComPago||0), tipo_pagamento:c.tipo }));
   const { error }=await sb.from('comissao_resultado').insert(recs);
   if(error){ alert('Erro ao salvar: '+error.message); return; }
-  // registra/atualiza pagamento (Previsto)
   await sb.from('pagamentos').delete().eq('periodo_id',p.id);
   await sb.from('pagamentos').insert({ restaurante_id:S.restaurante.id, periodo_id:p.id, ciclo:TIPO_PAG[c.tipo]||c.tipo,
     data_pagamento:p.data_pagamento, apuracao:`${fmtDM(new Date(p.data_inicio+'T00:00:00'))}–${fmtDM(new Date(p.data_fim+'T00:00:00'))}`,
-    colaboradores:c.rows.length, total_comissao:c.totalComissao, total_folha:c.totalAPagar, status:'Previsto' });
-  alert('Fechamento ('+(TIPO_PAG[c.tipo]||c.tipo)+') salvo: '+c.rows.length+' colaboradores · a pagar '+money(c.totalAPagar));
+    colaboradores:c.rows.length, total_comissao:c.totalComissao, total_folha:c.totalPagar, status:'Previsto' });
+  // Rescisão: marca o funcionário como inativo (desligado)
+  if(c.tipo==='rescisao' && p.funcionario_id){
+    if(confirm('Marcar o funcionário como DESLIGADO (inativo)?')){
+      await sb.from('funcionarios').update({ativo:false, status:'Processo de Desligamento'}).eq('id',p.funcionario_id);
+      await carregarDados();
+    }
+  }
+  alert('Fechamento ('+(TIPO_PAG[c.tipo]||c.tipo)+') salvo: '+c.rows.length+' colaborador(es) · a pagar '+money(c.totalPagar));
+  render();
 };
 </script>
 <script>
@@ -1009,89 +1143,106 @@ function calcIRRF(base){
   return Math.max(0,v);
 }
 const EMPRESA={ nome:'BTS EVENTOS LTDA', endereco:'RUA AMAURI, 35 — CEP 01448-000 — SÃO PAULO/SP', cnpj:'46.237.187/0001-42' };
+const TIPO_RECIBO={oficial:'RECIBO DE PAGAMENTO DE SALÁRIO', adiantamento:'RECIBO DE ADIANTAMENTO', outro:'RECIBO DE PAGAMENTO', rescisao:'RECIBO DE RESCISÃO', decimo_terceiro_1:'13º SALÁRIO — 1ª PARCELA', decimo_terceiro_2:'13º SALÁRIO — 2ª PARCELA'};
 function holeriteLinhas(){
-  const c=calcComissao(); if(!c) return []; const cfg=S.config; const dentroPct=Number(cfg.holerite_dentro_pct)/100;
-  return c.rows.map(r=>{ const comDentro=r.comTotal*dentroPct; const baseTrib=Number(r.f.salario)+comDentro+r.hePagar+r.minComp;
-    const inss=calcINSS(baseTrib); const irrf=calcIRRF(baseTrib-inss); const benef=Number(r.f.beneficios||0);
-    const totProv=Number(r.f.salario)+comDentro+r.hePagar+benef+r.minComp; const totDesc=inss+irrf;
-    return {r, comDentro, benef, baseTrib, inss, irrf, totProv, totDesc, liquido:totProv-totDesc, fora:r.comTotal*(1-dentroPct)}; });
+  const c=calcComissao(); if(!c) return {tipo:null, rows:[]};
+  const cfg=S.config, dentroPct=Number(cfg.holerite_dentro_pct)/100, tipo=c.tipo;
+  const rows=c.rows.map(r=>{
+    const comDentro=r.comDentro||0, benef=r.benef||0, he=r.hePagar||0;
+    let prov=[], base=0, desc=[], inss=0, irrf=0;
+    if(tipo==='adiantamento'){
+      prov=[['Adiantamento 40% do salário','',r.adiantSalario]]; if(he)prov.push(['Horas extras','',he]); if(benef)prov.push(['Benefícios','',benef]);
+    } else if(tipo==='decimo_terceiro_1'){
+      prov=[['13º salário - 1ª parcela','',r.base13*0.5]];
+    } else if(tipo==='decimo_terceiro_2'){
+      prov=[['13º salário - 2ª parcela','',r.base13*0.5]]; base=r.base13; inss=r.inss13||0; irrf=r.irrf13||0;
+      desc=[['INSS 13º','',inss],['IRRF 13º','',irrf]];
+    } else {
+      const salP = tipo==='rescisao' ? (r.salarioProp||0) : r.salario;
+      prov=[[tipo==='rescisao'?'Saldo de salário':'Salário mensalista','',salP],['Taxa de serviço (comissão)','',comDentro]];
+      if(he)prov.push(['Horas extras','',he]); if(benef)prov.push(['Benefícios','',benef]);
+      base=salP+comDentro+he; inss=calcINSS(base); irrf=calcIRRF(base-inss);
+      desc=[['INSS','',inss],['IRRF','',irrf]];
+      if(tipo==='oficial'){ const adC=(r.adiantComPago||0)*dentroPct;
+        desc.push(['Adiant. de salário','',r.adiantSalPago||0]); desc.push(['Adiant. de comissão','',adC]); }
+    }
+    const totProv=prov.reduce((a,x)=>a+x[2],0), totDesc=desc.reduce((a,x)=>a+x[2],0);
+    return {r, tipo, prov, desc:desc.filter(x=>x[2]>0), base, inss, irrf,
+      outros:totDesc-inss-irrf, totProv, totDesc, liquido:totProv-totDesc, comFora:r.comFora||0};
+  });
+  return {tipo, rows};
 }
-function drawRecibo(doc, x, mesRef){
+function drawRecibo(doc, x, mesRef, periodoTxt){
   const fmt=v=>(Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
   const r=x.r, L=12, R=198; let y=16;
   doc.setFont('helvetica','bold'); doc.setFontSize(9);
-  doc.text(EMPRESA.nome,L,y); doc.text('RECIBO DE PAGAMENTO DE SALÁRIO',R,y,{align:'right'});
+  doc.text(EMPRESA.nome,L,y); doc.text(TIPO_RECIBO[x.tipo]||'RECIBO DE PAGAMENTO',R,y,{align:'right'});
   doc.setFont('helvetica','normal'); doc.setFontSize(7); y+=4;
-  doc.text(EMPRESA.endereco,L,y); doc.text('Referente ao mês: '+mesRef,R,y,{align:'right'}); y+=3.6;
-  doc.text('CNPJ: '+EMPRESA.cnpj,L,y); y+=5.5;
+  doc.text(EMPRESA.endereco,L,y); doc.text('Referente: '+mesRef,R,y,{align:'right'}); y+=3.6;
+  doc.text('CNPJ: '+EMPRESA.cnpj,L,y); if(periodoTxt) doc.text('Apuração: '+periodoTxt,R,y,{align:'right'}); y+=5.5;
   doc.setFontSize(8); doc.setFont('helvetica','bold');
   doc.text(`${String(r.f.id).padStart(6,'0')}  ${r.f.nome}`,L,y);
   doc.setFont('helvetica','normal'); doc.text('Admissão: '+(r.f.data_admissao?r.f.data_admissao.split('-').reverse().join('/'):'—'),R,y,{align:'right'}); y+=4.5;
   doc.setFontSize(6.8); doc.text(`Função: ${r.f.cargos?.nome||'—'}      CPF: ${r.f.cpf||'—'}`,L,y); y+=3.5;
   doc.setDrawColor(160); doc.line(L,y,R,y); y+=3.4;
   doc.setFont('helvetica','bold'); doc.setFontSize(6.8);
-  doc.text('DESCRIÇÃO',L+2,y); doc.text('REFER.',118,y,{align:'right'}); doc.text('PROVENTOS',162,y,{align:'right'}); doc.text('DESCONTOS',R-2,y,{align:'right'}); y+=1.5;
+  doc.text('DESCRIÇÃO',L+2,y); doc.text('PROVENTOS',162,y,{align:'right'}); doc.text('DESCONTOS',R-2,y,{align:'right'}); y+=1.5;
   doc.line(L,y,R,y); y+=3.6; doc.setFont('helvetica','normal');
-  const prov=[['Salário mensalista','30,00',r.f.salario],['Taxa de serviço','',x.comDentro]];
-  if(r.hePagar>0) prov.push(['Horas extras','',r.hePagar]);
-  if(x.benef>0) prov.push(['Benefícios','',x.benef]);
-  if(r.minComp>0) prov.push(['Mínimo garantido','',r.minComp]);
-  const desc=[['INSS','',x.inss]]; if(x.irrf>0) desc.push(['IRRF','',x.irrf]);
-  const n=Math.max(prov.length,desc.length);
-  for(let i=0;i<n;i++){ if(prov[i]){ doc.text(prov[i][0],L+2,y); if(prov[i][1])doc.text(prov[i][1],118,y,{align:'right'}); doc.text(fmt(prov[i][2]),162,y,{align:'right'}); }
-    if(desc[i]){ doc.text(desc[i][0],168,y); doc.text(fmt(desc[i][2]),R-2,y,{align:'right'}); } y+=3.6; }
+  const prov=x.prov, desc=x.desc, n=Math.max(prov.length,desc.length);
+  for(let i=0;i<n;i++){ if(prov[i]){ doc.text(prov[i][0],L+2,y); doc.text(fmt(prov[i][2]),162,y,{align:'right'}); }
+    if(desc[i]){ doc.text(desc[i][0],110,y); doc.text(fmt(desc[i][2]),R-2,y,{align:'right'}); } y+=3.6; }
   y+=1; doc.line(L,y,R,y); y+=3.6; doc.setFont('helvetica','bold');
   doc.text('Totais',L+2,y); doc.text(fmt(x.totProv),162,y,{align:'right'}); doc.text(fmt(x.totDesc),R-2,y,{align:'right'}); y+=6;
-  doc.setFontSize(10); doc.text('SALÁRIO LÍQUIDO    R$ '+fmt(x.liquido),R,y,{align:'right'}); y+=7;
+  doc.setFontSize(10); doc.text('LÍQUIDO A RECEBER    R$ '+fmt(x.liquido),R,y,{align:'right'}); y+=7;
   doc.setFont('helvetica','normal'); doc.setFontSize(6.3);
-  const bw=(R-L)/4, bases=[['Salário base',r.f.salario],['Base INSS',x.baseTrib],['Base IRRF',Math.max(0,x.baseTrib-x.inss)],['Comissão por fora',x.fora]];
+  const bw=(R-L)/4, bases=[['Salário base',r.f.salario],['Base INSS/IRRF',x.base],['Base IRRF',Math.max(0,x.base-x.inss)],['Comissão por fora',x.comFora]];
   doc.rect(L,y,R-L,9);
   bases.forEach((b,i)=>{ const bx=L+i*bw; if(i>0)doc.line(bx,y,bx,y+9); doc.text(b[0],bx+2,y+3.5); doc.setFont('helvetica','bold'); doc.text(fmt(b[1]),bx+bw-2,y+7,{align:'right'}); doc.setFont('helvetica','normal'); });
   y+=14; doc.setFontSize(6.5);
   doc.text('Declaro ter recebido o valor líquido deste recibo.',L,y); y+=7;
   doc.text('____/____/______        Assinatura do colaborador: __________________________________',L,y); y+=8;
   doc.setTextColor(150); doc.setFontSize(6);
-  doc.text('Documento gerado pelo sistema (BETA) — valores estimados, não substituem a folha oficial.',L,y); doc.setTextColor(0);
+  doc.text('Documento gerado pelo sistema (BETA) — INSS/IRRF estimados, não substituem a folha oficial.',L,y); doc.setTextColor(0);
 }
 window.gerarHoleritePDF = function(funcId){
   if(!window.jspdf){ alert('Biblioteca de PDF não carregou. Recarregue a página.'); return; }
-  let linhas=holeriteLinhas(); if(funcId) linhas=linhas.filter(x=>x.r.f.id===funcId);
+  const H=holeriteLinhas(); let linhas=H.rows; if(funcId) linhas=linhas.filter(x=>x.r.f.id===funcId);
   if(!linhas.length){ alert('Sem dados para gerar.'); return; }
-  const p=S.periodoAtual, mesRef=(MESES_F[p.mes-1]||'')+'/'+p.ano;
+  const p=S.periodoAtual, mesRef=(TIPO_PAG[H.tipo]||'')+' · '+(MESES_F[p.mes-1]||'')+'/'+p.ano;
+  const periodoTxt=`${fmtDM(new Date(p.data_inicio+'T00:00:00'))}–${fmtDM(new Date(p.data_fim+'T00:00:00'))}`;
   const { jsPDF }=window.jspdf; const doc=new jsPDF({unit:'mm',format:'a4'});
-  linhas.forEach((x,i)=>{ if(i>0) doc.addPage(); drawRecibo(doc,x,mesRef); });
-  doc.save(funcId?('holerite-'+linhas[0].r.f.nome.split(' ')[0].toLowerCase()+'.pdf'):('holerites-'+mesRef.replace('/','-')+'.pdf'));
+  linhas.forEach((x,i)=>{ if(i>0) doc.addPage(); drawRecibo(doc,x,mesRef,periodoTxt); });
+  doc.save(funcId?('holerite-'+linhas[0].r.f.nome.split(' ')[0].toLowerCase()+'.pdf'):('holerites-'+(H.tipo||'')+'-'+(p.data_inicio||'')+'.pdf'));
 };
 window._viewHolerite = function(){
-  const header = `<div class="mb-6"><h1 class="text-3xl font-bold text-slate-900 mb-1 flex items-center gap-3">Holerite <span class="badge bg-purple-100 text-purple-700">BETA</span></h1><p class="text-slate-500 text-sm">Estimativa da folha por colaborador — proventos e descontos</p></div>`;
-  const aviso = `<div class="mb-4 p-3 bg-purple-50 border border-purple-200 rounded-lg text-sm text-purple-800 flex items-start gap-2"><i data-feather="alert-triangle" class="w-4 h-4 mt-0.5"></i><div><strong>Recurso em beta.</strong> INSS e IRRF são <strong>estimativas</strong> com tabelas de referência e não substituem o cálculo oficial da folha. Confira antes de usar. Não inclui ainda: férias/1/3, vale-transporte, dependentes, adiantamento.</div></div>`;
-  if(!S.periodoAtual) return header + aviso + seletorPeriodo() + card(`<div class="p-12 text-center text-slate-400"><i data-feather="file-text" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Selecione um período.</p></div>`);
-  const rows=holeriteLinhas();
-  const tot=k=>rows.reduce((a,x)=>a+x[k],0);
+  const header = `<div class="mb-6"><h1 class="text-3xl font-bold text-slate-900 mb-1 flex items-center gap-3">Holerite <span class="badge bg-purple-100 text-purple-700">BETA</span></h1><p class="text-slate-500 text-sm">Recibo de pagamento por colaborador — segue o tipo do período selecionado</p></div>`;
+  const aviso = `<div class="mb-4 p-3 bg-purple-50 border border-purple-200 rounded-lg text-sm text-purple-800 flex items-start gap-2"><i data-feather="alert-triangle" class="w-4 h-4 mt-0.5"></i><div><strong>Recurso em beta.</strong> INSS e IRRF são <strong>estimativas</strong> (tabelas de referência) e não substituem a folha oficial. Base de imposto = salário + comissão <em>por dentro</em> + HE (comissão por fora não tributa). Benefícios entram no líquido sem tributar. Verbas de rescisão (férias, aviso, FGTS) ainda não incluídas.</div></div>`;
+  if(!S.periodoAtual) return header + aviso + seletorPeriodo() + card(`<div class="p-12 text-center text-slate-400"><i data-feather="file-text" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Selecione um período (na aba Comissão ou aqui) para gerar os recibos.</p></div>`);
+  const H=holeriteLinhas(); const rows=H.rows; const tot=k=>rows.reduce((a,x)=>a+(x[k]||0),0);
   return header + aviso + seletorPeriodo()
-  + `<div class="flex justify-end mb-3"><button onclick="gerarHoleritePDF(null)" class="px-4 py-2 bg-purple-600 text-white rounded text-sm font-medium hover:bg-purple-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>Baixar todos (PDF)</button></div>`
+  + `<div class="flex items-center justify-between mb-3">
+       <span class="badge ${TIPO_BADGE[H.tipo]||''}">${TIPO_RECIBO[H.tipo]||'—'}</span>
+       <button onclick="gerarHoleritePDF(null)" class="px-4 py-2 bg-purple-600 text-white rounded text-sm font-medium hover:bg-purple-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>Baixar todos (PDF)</button>
+     </div>`
   + card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr>
       <th class="px-3 py-3 text-left">Funcionário</th>
-      <th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Comissão (dentro)</th><th class="px-2 py-3 text-right">HE</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">Mín.</th>
-      <th class="px-2 py-3 text-right bg-slate-50">Base trib.</th><th class="px-2 py-3 text-right text-red-600">INSS</th><th class="px-2 py-3 text-right text-red-600">IRRF</th>
-      <th class="px-3 py-3 text-right bg-green-50">LÍQUIDO holerite</th><th class="px-2 py-3 text-right bg-indigo-50">+ Fora</th><th class="px-2 py-3"></th></tr></thead><tbody>
+      <th class="px-2 py-3 text-right">Proventos</th><th class="px-2 py-3 text-right bg-slate-50">Base imposto</th>
+      <th class="px-2 py-3 text-right text-red-600">INSS</th><th class="px-2 py-3 text-right text-red-600">IRRF</th><th class="px-2 py-3 text-right text-red-600">Outros desc.</th>
+      <th class="px-3 py-3 text-right bg-green-50">LÍQUIDO</th><th class="px-2 py-3 text-right bg-indigo-50">Com. fora</th><th class="px-2 py-3"></th></tr></thead><tbody>
       ${rows.map(x=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
         <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${x.r.f.nome.split(' ').slice(0,2).join(' ')}</td>
-        <td class="px-2 py-2 text-right text-slate-600">${money(x.r.f.salario)}</td>
-        <td class="px-2 py-2 text-right">${money(x.comDentro)}</td>
-        <td class="px-2 py-2 text-right ${x.r.hePagar>0?'text-red-600':'text-slate-300'}">${x.r.hePagar>0?money(x.r.hePagar):'—'}</td>
-        <td class="px-2 py-2 text-right ${x.benef?'':'text-slate-300'}">${x.benef?money(x.benef):'—'}</td>
-        <td class="px-2 py-2 text-right ${x.r.minComp>0?'text-amber-600':'text-slate-300'}">${x.r.minComp>0?money(x.r.minComp):'—'}</td>
-        <td class="px-2 py-2 text-right bg-slate-50">${money(x.baseTrib)}</td>
-        <td class="px-2 py-2 text-right text-red-600">−${money(x.inss)}</td>
+        <td class="px-2 py-2 text-right">${money(x.totProv)}</td>
+        <td class="px-2 py-2 text-right bg-slate-50 ${x.base?'':'text-slate-300'}">${x.base?money(x.base):'—'}</td>
+        <td class="px-2 py-2 text-right text-red-600">${x.inss>0?'−'+money(x.inss):'—'}</td>
         <td class="px-2 py-2 text-right text-red-600">${x.irrf>0?'−'+money(x.irrf):'—'}</td>
+        <td class="px-2 py-2 text-right text-red-600">${x.outros>0?'−'+money(x.outros):'—'}</td>
         <td class="px-3 py-2 text-right font-bold text-green-700 bg-green-50/50">${money(x.liquido)}</td>
-        <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${money(x.fora)}</td>
+        <td class="px-2 py-2 text-right text-indigo-700 bg-indigo-50/40">${x.comFora>0?money(x.comFora):'—'}</td>
         <td class="px-2 py-2 text-center"><button onclick="gerarHoleritePDF(${x.r.f.id})" class="text-purple-600 hover:underline text-xs flex items-center gap-1 mx-auto" title="Baixar recibo"><i data-feather="download" class="w-3 h-3"></i>PDF</button></td>
       </tr>`).join('')}
-      <tr class="bg-slate-50 font-bold text-slate-800"><td class="px-3 py-2">TOTAL</td><td class="px-2 py-2 text-right">${money(rows.reduce((a,x)=>a+Number(x.r.f.salario),0))}</td><td class="px-2 py-2 text-right">${money(tot('comDentro'))}</td><td class="px-2 py-2 text-right">${money(rows.reduce((a,x)=>a+x.r.hePagar,0))}</td><td class="px-2 py-2 text-right">${money(tot('benef'))}</td><td class="px-2 py-2 text-right">${money(rows.reduce((a,x)=>a+x.r.minComp,0))}</td><td class="px-2 py-2 text-right bg-slate-100">${money(tot('baseTrib'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('inss'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('irrf'))}</td><td class="px-3 py-2 text-right text-green-700 bg-green-100">${money(tot('liquido'))}</td><td class="px-2 py-2 text-right bg-indigo-100 text-indigo-700">${money(tot('fora'))}</td><td></td></tr>
+      <tr class="bg-slate-50 font-bold text-slate-800"><td class="px-3 py-2">TOTAL</td><td class="px-2 py-2 text-right">${money(tot('totProv'))}</td><td class="px-2 py-2 text-right bg-slate-100">${money(tot('base'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('inss'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('irrf'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('outros'))}</td><td class="px-3 py-2 text-right text-green-700 bg-green-100">${money(tot('liquido'))}</td><td class="px-2 py-2 text-right bg-indigo-100 text-indigo-700">${money(tot('comFora'))}</td><td></td></tr>
       </tbody></table></div>
-      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Base tributável = salário + comissão por dentro + HE + mínimo. INSS e IRRF progressivos (estimativa). "+ Fora" = comissão paga por fora do holerite (não tributada aqui). Benefícios entram no líquido sem tributar.</div>`);
+      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">"Outros desc." = adiantamentos (salário 40% + comissão) deduzidos no oficial. Clique em <strong>PDF</strong> para o recibo individual ou "Baixar todos".</div>`);
 };
 </script>
 </body>
