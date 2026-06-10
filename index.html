@@ -374,9 +374,9 @@ function viewStub(titulo){
 function abrirCadastro(id){
   if(id==null){ modalCad={id:null, nome:'', cargo_id:S.cargos[0]?.id, status:'Normal', regime:'CLT', salario:2499.50, minimo_garantido:0, adiantamento:true, beneficios:0, data_admissao:'', data_nascimento:'', codigo_contabil:'', vale_transporte:true}; }
   else { const f=S.funcionarios.find(x=>x.id===id); modalCad={id:f.id, nome:f.nome, cargo_id:f.cargo_id, status:f.status, regime:f.regime, salario:f.salario, minimo_garantido:f.minimo_garantido, adiantamento:f.adiantamento, beneficios:f.beneficios, data_admissao:f.data_admissao||'', data_nascimento:f.data_nascimento||'', codigo_contabil:f.codigo_contabil||'', vale_transporte:f.vale_transporte!==false}; }
-  render();
+  paintModals();
 }
-function fecharModal(){ modalCad=null; render(); }
+function fecharModal(){ modalCad=null; paintModals(); }
 async function salvarCadastro(){
   const d={ nome:val('cad_nome').trim(), cargo_id:+val('cad_cargo'), status:val('cad_status'), regime:val('cad_regime'),
     salario:+val('cad_salario')||0, minimo_garantido:+val('cad_minimo')||0, adiantamento:val('cad_adiantamento')==='sim', beneficios:+val('cad_beneficios')||0,
@@ -445,9 +445,23 @@ function render(){
     usuarios:()=>(wv('Usuarios')?wv('Usuarios')():viewStub('Usuários'))};
   const v=views[current]||viewDashboard;
   root.innerHTML=appShell(v());
-  document.getElementById('modalHost').innerHTML=modalHTML();
+  document.getElementById('modalHost').innerHTML=modalsHTML();
   feather.replace();
   if(modalCad) previewCargo();
+}
+// Todos os modais vivem num host separado do conteúdo; abrir/fechar atualiza só o host (sem reconstruir a página).
+function modalsHTML(){
+  return (typeof modalCad!=='undefined'&&modalCad?modalHTML():'')
+    + (typeof atribForm!=='undefined'&&atribForm?atribModalHTML():'')
+    + (typeof esocialModal!=='undefined'&&esocialModal?esocialModalHTML():'')
+    + (typeof escEdit!=='undefined'&&escEdit?escEditorHTML():'')
+    + (typeof pontoEdit!=='undefined'&&pontoEdit?viewPontoEditor():'');
+}
+function paintModals(){
+  const host=document.getElementById('modalHost'); if(!host) return;
+  host.innerHTML=modalsHTML();
+  feather.replace();
+  if(typeof modalCad!=='undefined'&&modalCad) previewCargo();
 }
 
 /* config view depende de S — definida em config.js inline abaixo */
@@ -888,12 +902,11 @@ window._viewPonto = function(){
     </div>`
   + (pontoImport ? viewImportPreview() : '')
   + card(`<div class="overflow-x-auto"><table class="w-full text-xs" style="border-collapse:collapse"><thead class="bg-slate-50 text-slate-600">${head}</thead><tbody>${body}</tbody></table></div>
-      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Clique numa célula para <strong>editar o dia</strong> (status, entrada/saída, horas, banco). ${Object.entries(ST_AB).map(([k,[ab,cl]])=>`<span class="inline-block px-1 rounded ${cl}">${ab}</span>=${k}`).join(' · ')}.</div>`)
-  + (pontoEdit ? viewPontoEditor() : '');
+      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">Clique numa célula para <strong>editar o dia</strong> (status, entrada/saída, horas, banco). ${Object.entries(ST_AB).map(([k,[ab,cl]])=>`<span class="inline-block px-1 rounded ${cl}">${ab}</span>=${k}`).join(' · ')}.</div>`);
 };
 window.filtrarPonto=function(q){ q=(q||'').toLowerCase(); document.querySelectorAll('.pntrow').forEach(r=>{r.style.display=r.dataset.n.includes(q)?'':'none';}); };
-window.editarDia=function(funcId, ds){ const r=pgRow(funcId,ds); pontoEdit={funcId, ds, id:r?r.id:null, status:r?r.status:'Normal', ent:r?(r.entrada_1||''):'', sai:r?(r.saida_1||''):'', horas:r?(r.horas_trabalhadas||0):0, banco:r?(r.banco_minutos||0):0, noturno:r?(r.noturno_minutos||0):0}; render(); };
-window.fecharEditorDia=function(){ pontoEdit=null; render(); };
+window.editarDia=function(funcId, ds){ const r=pgRow(funcId,ds); pontoEdit={funcId, ds, id:r?r.id:null, status:r?r.status:'Normal', ent:r?(r.entrada_1||''):'', sai:r?(r.saida_1||''):'', horas:r?(r.horas_trabalhadas||0):0, banco:r?(r.banco_minutos||0):0, noturno:r?(r.noturno_minutos||0):0}; paintModals(); };
+window.fecharEditorDia=function(){ pontoEdit=null; paintModals(); };
 function viewPontoEditor(){
   const e=pontoEdit, f=S.funcionarios.find(x=>x.id===e.funcId);
   return `<div class="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)fecharEditorDia()">
@@ -946,9 +959,9 @@ async function reloadSolic(){ const {data}=await sb.from('solicitacoes_extra').s
 window.mudarMesExtras=function(delta){ let m=extrasMes.mes+delta,a=extrasMes.ano; if(m<1){m=12;a--;} if(m>12){m=1;a++;} extrasMes={ano:a,mes:m}; render(); };
 
 /* ---- atribuir pessoa a uma unidade de extra/dobra (funcionário OU freelancer) ---- */
-window.abrirAtribuir=function(id){ const s=S.solicitacoes.find(x=>x.id===id); if(!s)return; atribForm={id, tipo:s.tipo_pessoa||'funcionario', funcionario_id:s.funcionario_id||null, nome:s.nome_freelancer||'', cpf:s.cpf_freelancer||''}; render(); };
-window.fecharAtribuir=function(){ atribForm=null; render(); };
-window.atribTipo=function(v){ atribForm.tipo=v; atribForm.funcionario_id=null; render(); };
+window.abrirAtribuir=function(id){ const s=S.solicitacoes.find(x=>x.id===id); if(!s)return; atribForm={id, tipo:s.tipo_pessoa||'funcionario', funcionario_id:s.funcionario_id||null, nome:s.nome_freelancer||'', cpf:s.cpf_freelancer||''}; paintModals(); };
+window.fecharAtribuir=function(){ atribForm=null; paintModals(); };
+window.atribTipo=function(v){ atribForm.tipo=v; atribForm.funcionario_id=null; paintModals(); };
 window.salvarAtribuir=async function(){
   const a=atribForm; let upd;
   if(a.tipo==='funcionario'){ const fid=+val('atb_func')||null; if(!fid){ alert('Escolha o funcionário.'); return; } upd={tipo_pessoa:'funcionario', funcionario_id:fid, nome_freelancer:null, cpf_freelancer:null}; }
@@ -1089,7 +1102,7 @@ window._viewExtras=function(){
       </div>`);
   return pageHeader('Extras (RH)','Calendário, custo provisionado e provisão de pagamento')
     + `<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">${kpis.map(k=>card(`<div class="p-5"><p class="text-xs text-slate-500 font-semibold mb-2">${k[0]}</p><p class="text-2xl font-bold ${k[3]}">${k[1]}</p><p class="text-xs text-slate-400 mt-2">${k[2]}</p></div>`)).join('')}</div>`
-    + calendar + `<div class="mt-4"></div>` + lista + `<div class="mt-4"></div>` + relES + atribModalHTML();
+    + calendar + `<div class="mt-4"></div>` + lista + `<div class="mt-4"></div>` + relES;
 };
 </script>
 <script>
@@ -1509,8 +1522,7 @@ window._viewHolerite = function(){
       </tr>`).join('')}
       <tr class="bg-slate-50 font-bold text-slate-800"><td class="px-3 py-2">TOTAL</td><td class="px-2 py-2 text-right">${money(tot('totProv'))}</td><td class="px-2 py-2 text-right bg-slate-100">${money(tot('base'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('inss'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('irrf'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('outros'))}</td><td class="px-3 py-2 text-right text-green-700 bg-green-100">${money(tot('liquido'))}</td><td class="px-2 py-2 text-right bg-indigo-100 text-indigo-700">${money(tot('comFora'))}</td><td></td></tr>
       </tbody></table></div>
-      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">"Outros desc." = adiantamentos (salário 40% + comissão) deduzidos no oficial. Clique em <strong>PDF</strong> para o recibo individual ou "Baixar todos".</div>`)
-  + esocialModalHTML();
+      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">"Outros desc." = adiantamentos (salário 40% + comissão) deduzidos no oficial. Clique em <strong>PDF</strong> para o recibo individual ou "Baixar todos".</div>`);
 };
 
 /* ===================== PLANILHA e-SOCIAL (contador) ===================== */
@@ -1531,9 +1543,9 @@ window.abrirEsocial = async function(){
   const rows=S.funcionarios.filter(f=>f.codigo_contabil).sort((a,b)=>a.nome.localeCompare(b.nome)).map(f=>({
     fid:f.id, codigo:f.codigo_contabil, nome:f.nome, vt:f.vale_transporte!==false,
     notMin:(agg[f.id]||{}).not||0, heMin:(agg[f.id]||{}).he||0, consumo:consMap[f.id]||0 }));
-  esocialModal={ comp, ano, mes, rows }; render();
+  esocialModal={ comp, ano, mes, rows }; paintModals();
 };
-window.fecharEsocial=function(){ esocialModal=null; render(); };
+window.fecharEsocial=function(){ esocialModal=null; paintModals(); };
 window.esConsumoInput=function(fid,v){ const r=esocialModal.rows.find(x=>x.fid===fid); if(r) r.consumo=v; };
 window.salvarEsocialConsumo=async function(silent){
   const M=esocialModal; const recs=M.rows.map(r=>({ restaurante_id:S.restaurante.id, funcionario_id:r.fid, competencia:M.comp, valor:Number(r.consumo)||0 }));
@@ -1625,8 +1637,8 @@ function minPer(dow,per){ const m=(S.escalaMin||[]).find(x=>x.dow===dow&&x.perio
 window.escSetSetor=function(v){ escSetor=+v; escSemanaIdx=0; carregarEscala().then(render); };
 window.escMudaMes=function(delta){ let m=escMes+delta,a=escAno; if(m<1){m=12;a--;} if(m>12){m=1;a++;} escMes=m;escAno=a;escSemanaIdx=0; carregarEscala().then(render); };
 window.escSemana=function(i){ const ws=semanasMes(); escSemanaIdx=Math.max(0,Math.min(ws.length-1,i)); render(); };
-window.escEditar=function(nome,data){ const p=pessoasEsc().find(x=>x.nome===nome)||{}; const c=celEsc(nome,data)||{}; escEdit={nome,data,funcionario_id:p.funcionario_id,cargo:p.cargo,status:c.status||'trabalha',entrada:c.entrada||'',saida:c.saida||'',periodo:c.periodo||'almoco'}; render(); };
-window.escFechar=function(){ escEdit=null; render(); };
+window.escEditar=function(nome,data){ const p=pessoasEsc().find(x=>x.nome===nome)||{}; const c=celEsc(nome,data)||{}; escEdit={nome,data,funcionario_id:p.funcionario_id,cargo:p.cargo,status:c.status||'trabalha',entrada:c.entrada||'',saida:c.saida||'',periodo:c.periodo||'almoco'}; paintModals(); };
+window.escFechar=function(){ escEdit=null; paintModals(); };
 window.escSalvar=async function(){
   const e=escEdit; const status=val('ec_status');
   const rec={status, entrada:status==='trabalha'?(val('ec_ent')||null):null, saida:status==='trabalha'?(val('ec_sai')||null):null, periodo:status==='trabalha'?(val('ec_per')||null):null, updated_at:new Date().toISOString()};
@@ -1714,7 +1726,7 @@ window._viewEscala=function(){
     +`<div class="mt-4">${estruturaBox}</div>`
     +`<div class="mt-4">${metaBox}</div>`
     +`<div class="mt-4">${sugBox}</div>`
-    +`<div class="mt-4">${folgBox}</div>`+escEditorHTML();
+    +`<div class="mt-4">${folgBox}</div>`;
 };
 </script>
 </body>
