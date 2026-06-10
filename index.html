@@ -476,6 +476,7 @@ window._viewConfig = function(){
       ${f('Limite de HE/dia (h)', numInput('cf_he', cfg.limite_he_dia_horas,'h'))}
       ${f('Horas-mês (base p/ valor-hora)', numInput('cf_horasmes', cfg.horas_mes_base??220,'h'))}
       ${f('Adicional de HE', numInput('cf_adiche', cfg.adicional_he_pct??50,'%'))}
+      ${f('Adicional noturno', numInput('cf_adicnot', cfg.adicional_noturno_pct??50,'%'))}
       ${f('Adiantamento (% do salário)', numInput('cf_adiantpct', cfg.adiantamento_pct??40,'%'))}
     </div>`)
   + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="pie-chart" class="w-4 h-4 text-blue-600"></i>Rateio por setor</h3>
@@ -503,7 +504,7 @@ window.salvarConfig = async function(){
   const upd={ desconto_falta_pct:v('cf_falta'), desconto_atraso_pct:v('cf_atraso'), desconto_advertencia_pct:v('cf_adv'),
     valor_dobra:v('cf_dobra'), valor_extra_diaria:v('cf_extra'), retencao_casa_pct:v('cf_retencao'),
     holerite_dentro_pct:dentro, holerite_fora_pct:100-dentro, desc_extras_pct:v('cf_descextras'), limite_he_dia_horas:v('cf_he'),
-    horas_mes_base:v('cf_horasmes')||220, adicional_he_pct:v('cf_adiche'), adiantamento_pct:v('cf_adiantpct')||40, updated_at:new Date().toISOString() };
+    horas_mes_base:v('cf_horasmes')||220, adicional_he_pct:v('cf_adiche'), adicional_noturno_pct:v('cf_adicnot')||50, adiantamento_pct:v('cf_adiantpct')||40, updated_at:new Date().toISOString() };
   let e1=(await sb.from('config_remuneracao').update(upd).eq('id',S.config.id)).error;
   // rateio por setor
   for(const s of S.setores){ const r=S.rateio.find(x=>x.tipo==='setor'&&x.setor_id===s.id); const pct=v('cr_'+s.id);
@@ -566,6 +567,8 @@ function calcComissao(){
     r.comTotal=r.comissao+r.repique+r.ranking;                 // comissão DO PERÍODO
     const valorHora=horasMes>0?Number(r.f.salario)/horasMes:0;
     r.hePagar=(r.heMin/60)*valorHora*(1+Number(cfg.adicional_he_pct||0)/100);
+    r.adNotMin=noturnoFunc(r.f.id);
+    r.adNoturno=(r.adNotMin/60)*valorHora*(Number(cfg.adicional_noturno_pct||0)/100);
     r.salario=Number(r.f.salario); r.benef=Number(r.f.beneficios||0);
     r.minComp=0; r.adiantSalario=0; r.adiantSalPago=0; r.adiantComPago=0;
     r.comissaoTotal=r.comTotal;
@@ -573,15 +576,15 @@ function calcComissao(){
 
     if(tipo==='adiantamento'){
       r.adiantSalario=r.salario*adiantPct/100;
-      r.holerite=r.adiantSalario+r.benef+r.hePagar;            // holerite dia 20 (sem comissão)
-      r.totalPagar=r.adiantSalario+r.comTotal+r.benef+r.hePagar; // pago de fato no dia 20
+      r.holerite=r.adiantSalario+r.benef+r.hePagar+r.adNoturno;            // holerite dia 20 (sem comissão)
+      r.totalPagar=r.adiantSalario+r.comTotal+r.benef+r.hePagar+r.adNoturno; // pago de fato no dia 20
     } else if(tipo==='oficial'){
       const ant=S.adiantAnt[r.f.id]||{salario:0,comissao:0};
       r.adiantSalPago=ant.salario; r.adiantComPago=ant.comissao;
       r.comissaoOficial=r.comTotal;
       r.comissaoTotal=r.comissaoOficial+r.adiantComPago;        // total das duas quinzenas
       r.minComp=Math.max(0,Number(r.f.minimo_garantido||0)-(r.salario+r.comissaoTotal)); // POR FORA
-      r.proventos=r.salario+r.comissaoTotal+r.benef+r.hePagar;
+      r.proventos=r.salario+r.comissaoTotal+r.benef+r.hePagar+r.adNoturno;
       r.descontos=r.adiantSalPago+r.adiantComPago;
       r.holerite=r.proventos-r.descontos;                       // líquido do holerite
       r.totalPagar=r.holerite;
@@ -589,7 +592,7 @@ function calcComissao(){
       const diasTrab=Math.max(0,dias-r.falta);
       r.salarioProp=r.salario*Math.min(diasTrab,30)/30;         // saldo de salário (proporcional)
       r.diasTrab=diasTrab;
-      r.holerite=r.salarioProp+r.comTotal+r.benef+r.hePagar;
+      r.holerite=r.salarioProp+r.comTotal+r.benef+r.hePagar+r.adNoturno;
       r.totalPagar=r.holerite;
     } else if(tipo==='decimo_terceiro_1' || tipo==='decimo_terceiro_2'){
       const anoRef=new Date(p.data_inicio+'T00:00:00').getFullYear();
@@ -601,7 +604,7 @@ function calcComissao(){
       r.totalPagar=r.holerite;
     } else { // outro: folha cheia
       r.minComp=Math.max(0,Number(r.f.minimo_garantido||0)-(r.salario+r.comTotal));
-      r.holerite=r.salario+r.comTotal+r.benef+r.hePagar;
+      r.holerite=r.salario+r.comTotal+r.benef+r.hePagar+r.adNoturno;
       r.totalPagar=r.holerite;
     }
     r.comDentro=r.comissaoTotal*dentroPct;                      // vai pro holerite
@@ -771,6 +774,7 @@ window.salvarResultadoComissao = async function(){
     comissao:r.comissao, repique:r.repique, ranking_bonus:r.ranking, comissao_total:r.comTotal,
     salario:r.salario, beneficios:r.benef, minimo_complemento:r.minComp, total:r.totalPagar,
     pago_dentro:r.comDentro, pago_fora:r.comFora, he_pagar_minutos:r.heMin||0, he_pagar_valor:r.hePagar||0,
+    adic_noturno_minutos:r.adNotMin||0, adic_noturno_valor:r.adNoturno||0,
     adiant_salario:r.adiantSalario||0, adiant_anterior:(r.adiantSalPago||0)+(r.adiantComPago||0), tipo_pagamento:c.tipo }));
   const { error }=await sb.from('comissao_resultado').insert(recs);
   if(error){ alert('Erro ao salvar: '+error.message); return; }
@@ -803,6 +807,7 @@ function bancoFunc(funcId){
     if(min>limMin){ pagar+=min; } else { banco+=min; } });
   return { banco, pagar };
 }
+function noturnoFunc(funcId){ let m=0; S.ponto.filter(p=>p.funcionario_id===funcId).forEach(p=>{ m+=Number(p.noturno_minutos)||0; }); return m; }
 window.salvarLimiteHE = async function(v){ const val=+v||0; await sb.from('config_remuneracao').update({limite_he_dia_horas:val}).eq('id',S.config.id); S.config.limite_he_dia_horas=val; render(); };
 
 let pontoRange=null, pontoEdit=null;
@@ -855,7 +860,7 @@ window._viewPonto = function(){
   + (pontoEdit ? viewPontoEditor() : '');
 };
 window.filtrarPonto=function(q){ q=(q||'').toLowerCase(); document.querySelectorAll('.pntrow').forEach(r=>{r.style.display=r.dataset.n.includes(q)?'':'none';}); };
-window.editarDia=function(funcId, ds){ const r=pgRow(funcId,ds); pontoEdit={funcId, ds, id:r?r.id:null, status:r?r.status:'Normal', ent:r?(r.entrada_1||''):'', sai:r?(r.saida_1||''):'', horas:r?(r.horas_trabalhadas||0):0, banco:r?(r.banco_minutos||0):0}; render(); };
+window.editarDia=function(funcId, ds){ const r=pgRow(funcId,ds); pontoEdit={funcId, ds, id:r?r.id:null, status:r?r.status:'Normal', ent:r?(r.entrada_1||''):'', sai:r?(r.saida_1||''):'', horas:r?(r.horas_trabalhadas||0):0, banco:r?(r.banco_minutos||0):0, noturno:r?(r.noturno_minutos||0):0}; render(); };
 window.fecharEditorDia=function(){ pontoEdit=null; render(); };
 function viewPontoEditor(){
   const e=pontoEdit, f=S.funcionarios.find(x=>x.id===e.funcId);
@@ -868,6 +873,7 @@ function viewPontoEditor(){
         <div><label class="text-xs text-slate-500 block mb-1">Saída</label><input id="ed_sai" type="time" value="${e.sai}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
         <div><label class="text-xs text-slate-500 block mb-1">Horas trabalhadas</label><input id="ed_horas" type="number" step="0.01" value="${e.horas}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
         <div><label class="text-xs text-slate-500 block mb-1">Banco (min, +/−)</label><input id="ed_banco" type="number" value="${e.banco}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
+        <div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">Noturno (min, 22h–5h)</label><input id="ed_noturno" type="number" value="${e.noturno}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
       </div>
       <div class="flex justify-between px-5 py-3 border-t border-slate-200">
         ${e.id?`<button onclick="excluirDia()" class="px-3 py-2 text-red-500 text-sm hover:underline">Limpar dia</button>`:'<span></span>'}
@@ -878,7 +884,7 @@ function viewPontoEditor(){
 window.salvarDia=async function(){
   const e=pontoEdit, v=id=>(document.getElementById(id)||{}).value;
   const rec={ funcionario_id:e.funcId, periodo_id:periodoDaData(e.ds), data:e.ds, status:v('ed_status'),
-    entrada_1:v('ed_ent')||null, saida_1:v('ed_sai')||null, horas_trabalhadas:+v('ed_horas')||0, banco_minutos:+v('ed_banco')||0, origem:'manual', validado:true };
+    entrada_1:v('ed_ent')||null, saida_1:v('ed_sai')||null, horas_trabalhadas:+v('ed_horas')||0, banco_minutos:+v('ed_banco')||0, noturno_minutos:+v('ed_noturno')||0, origem:'manual', validado:true };
   const { error }=await sb.from('controle_ponto').upsert(rec,{onConflict:'funcionario_id,data'});
   if(error){ alert('Erro ao salvar: '+error.message); return; }
   pontoEdit=null; await carregarPontoGrid(); render();
@@ -1051,6 +1057,9 @@ let pontoImport=null;   // {funcId, funcNomePDF, dias:[...], periodoTxt}
 if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 function _tomin(t){ const [h,m]=t.split(':').map(Number); return h*60+m; }
+function _ovlp(a,b,s,e){ return Math.max(0, Math.min(b,e)-Math.max(a,s)); }
+// minutos trabalhados na janela noturna (22:00–05:00). a,b em minutos; b já ajustado p/ virada de meia-noite
+function _noturnoMin(a,b){ return _ovlp(a,b,0,300)+_ovlp(a,b,1320,1740); }
 function extrairLinhasPDF(tc){
   const ln={};
   tc.items.forEach(it=>{ const y=Math.round(it.transform[5]); (ln[y]=ln[y]||[]).push(it); });
@@ -1070,13 +1079,13 @@ function parseSecullum(text){
     else if(/^F[ée]ria/i.test(r))full='Férias'; else if(/^Afasta/i.test(r))full='Afastamento'; else if(/^Falta/i.test(r))full='Falta';
     const toks=(rest.match(/\d{2}:\d{2}/g)||[]); const punches=toks.slice(0,4);
     const saldos=(rest.match(/[+\-]\d{2}:\d{2}/g)||[]);
-    let horas=0; for(let i=0;i+1<punches.length;i+=2){ let a=_tomin(punches[i]),b=_tomin(punches[i+1]); if(b<a)b+=1440; horas+=b-a; }
+    let horas=0, noturno=0; for(let i=0;i+1<punches.length;i+=2){ let a=_tomin(punches[i]),b=_tomin(punches[i+1]); if(b<a)b+=1440; horas+=b-a; noturno+=_noturnoMin(a,b); }
     const status = full || (punches.length?'Normal':'Falta');
     const turno = punches.length ? (_tomin(punches[0])<720?'Almoço':(_tomin(punches[0])>=840?'Jantar':'Misto')) : '';
     const sld = saldos.length?saldos[saldos.length-1]:'';
     const banco = sld ? (sld[0]==='-'?-1:1)*_tomin(sld.replace(/[+\-]/,'')) : 0;
     dias.push({ data:`${yy}-${mm}-${dd}`, dataBR:`${dd}/${mm}`, wd, status,
-      ent:punches[0]||'', sai:punches.length>=2?punches[punches.length-1]:'', horas:+(horas/60).toFixed(2), turno, banco, sld });
+      ent:punches[0]||'', sai:punches.length>=2?punches[punches.length-1]:'', horas:+(horas/60).toFixed(2), turno, banco, sld, noturno:Math.round(noturno) });
   });
   return { dias, periodoTxt };
 }
@@ -1149,7 +1158,7 @@ window.aplicarImport = async function(){
   if(!alvos.length){ alert('Nenhum funcionário casado para importar.'); return; }
   let recs=[];
   alvos.forEach(x=>{ x.dias.forEach(d=>{ recs.push({ funcionario_id:x.funcId, periodo_id:periodoDaData(d.data), data:d.data, status:d.status,
-    horas_trabalhadas:d.horas||0, banco_minutos:d.banco||0, turno:d.turno||null, entrada_1:d.ent||null, saida_1:d.sai||null, origem:'upload', validado:true }); }); });
+    horas_trabalhadas:d.horas||0, banco_minutos:d.banco||0, noturno_minutos:d.noturno||0, turno:d.turno||null, entrada_1:d.ent||null, saida_1:d.sai||null, origem:'upload', validado:true }); }); });
   // upsert em lotes
   const chunk=500; let erro=null;
   for(let i=0;i<recs.length;i+=chunk){ const { error }=await sb.from('controle_ponto').upsert(recs.slice(i,i+chunk),{onConflict:'funcionario_id,data'}); if(error){erro=error;break;} }
@@ -1241,10 +1250,10 @@ function holeriteLinhas(){
   const c=calcComissao(); if(!c) return {tipo:null, rows:[]};
   const cfg=S.config, dentroPct=Number(cfg.holerite_dentro_pct)/100, tipo=c.tipo;
   const rows=c.rows.map(r=>{
-    const comDentro=r.comDentro||0, benef=r.benef||0, he=r.hePagar||0;
+    const comDentro=r.comDentro||0, benef=r.benef||0, he=r.hePagar||0, adn=r.adNoturno||0;
     let prov=[], base=0, desc=[], inss=0, irrf=0;
     if(tipo==='adiantamento'){
-      prov=[['Adiantamento 40% do salário','',r.adiantSalario]]; if(he)prov.push(['Horas extras','',he]); if(benef)prov.push(['Benefícios','',benef]);
+      prov=[['Adiantamento 40% do salário','',r.adiantSalario]]; if(he)prov.push(['Horas extras','',he]); if(adn)prov.push(['Adicional noturno','',adn]); if(benef)prov.push(['Benefícios','',benef]);
     } else if(tipo==='decimo_terceiro_1'){
       prov=[['13º salário - 1ª parcela','',r.base13*0.5]];
     } else if(tipo==='decimo_terceiro_2'){
@@ -1253,8 +1262,8 @@ function holeriteLinhas(){
     } else {
       const salP = tipo==='rescisao' ? (r.salarioProp||0) : r.salario;
       prov=[[tipo==='rescisao'?'Saldo de salário':'Salário mensalista','',salP],['Taxa de serviço (comissão)','',comDentro]];
-      if(he)prov.push(['Horas extras','',he]); if(benef)prov.push(['Benefícios','',benef]);
-      base=salP+comDentro+he; inss=calcINSS(base); irrf=calcIRRF(base-inss);
+      if(he)prov.push(['Horas extras','',he]); if(adn)prov.push(['Adicional noturno','',adn]); if(benef)prov.push(['Benefícios','',benef]);
+      base=salP+comDentro+he+adn; inss=calcINSS(base); irrf=calcIRRF(base-inss);
       desc=[['INSS','',inss],['IRRF','',irrf]];
       if(tipo==='oficial'){ const adC=(r.adiantComPago||0)*dentroPct;
         desc.push(['Adiant. de salário','',r.adiantSalPago||0]); desc.push(['Adiant. de comissão','',adC]); }
