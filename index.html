@@ -818,6 +818,15 @@ function periodoDaData(ds){ const ps=S.periodos.filter(p=>['oficial','adiantamen
 function pgRow(funcId,ds){ return S.pontoGrid.find(p=>p.funcionario_id===funcId&&p.data===ds)||null; }
 function bancoGrid(funcId){ const lim=(Number(S.config?.limite_he_dia_horas)||2)*60; let banco=0,pagar=0; S.pontoGrid.filter(p=>p.funcionario_id===funcId).forEach(p=>{const min=Number(p.banco_minutos)||0; if(min>lim)pagar+=min; else banco+=min;}); return {banco,pagar}; }
 async function carregarPontoGrid(){ if(!pontoRange){S.pontoGrid=[];return;} const {data}=await sb.from('controle_ponto').select('*').gte('data',pontoRange.ini).lte('data',pontoRange.fim); S.pontoGrid=data||[]; }
+// Conferência dobra × HE: dias com dobra (funcionário) E ponto com HE positiva → RH confirma ou ajusta
+function dobrasFuncSet(){ const dob=new Set(); if(!pontoRange) return dob;
+  (S.solicitacoes||[]).forEach(s=>{ if(s.tipo==='dobra' && s.funcionario_id && s.data>=pontoRange.ini && s.data<=pontoRange.fim && s.status_final!=='recusado') dob.add(s.funcionario_id+'|'+s.data); });
+  return dob; }
+function conflitosDobraHE(){ const dob=dobrasFuncSet(); const out=[];
+  (S.pontoGrid||[]).forEach(p=>{ const min=Number(p.banco_minutos)||0; if(min>0 && !p.he_conferido && dob.has(p.funcionario_id+'|'+p.data)){ const f=S.funcionarios.find(x=>x.id===p.funcionario_id); out.push({id:p.id, funcId:p.funcionario_id, nome:f?f.nome:('#'+p.funcionario_id), data:p.data, banco:min}); } });
+  out.sort((a,b)=>a.data.localeCompare(b.data)||a.nome.localeCompare(b.nome)); return out; }
+window.conferirHE=async function(id){ const {error}=await sb.from('controle_ponto').update({he_conferido:true}).eq('id',id); if(error){alert('Erro: '+error.message);return;} await carregarPontoGrid(); render(); };
+window.zerarHEDobra=async function(id){ if(!confirm('Zerar a HE deste dia (dobra paga, sem hora extra)?'))return; const {error}=await sb.from('controle_ponto').update({banco_minutos:0,he_conferido:true}).eq('id',id); if(error){alert('Erro: '+error.message);return;} await carregarPontoGrid(); render(); };
 window.setPontoRange=async function(){ const ini=val('pr_ini'),fim=val('pr_fim'); if(!ini||!fim||fim<ini){alert('Datas inválidas.');return;} pontoRange={ini,fim}; await carregarPontoGrid(); render(); };
 
 window._viewPonto = function(){
@@ -825,6 +834,7 @@ window._viewPonto = function(){
   if(!pontoRange){ const h=new Date(); pontoRange={ini:`${h.getFullYear()}-${String(h.getMonth()+1).padStart(2,'0')}-01`, fim:ymdStr(new Date(h.getFullYear(),h.getMonth()+1,0))}; }
   const dias=diasRange(pontoRange.ini,pontoRange.fim);
   const limite=Number(S.config.limite_he_dia_horas)||2;
+  const confList=conflitosDobraHE(); const confSet=new Set(confList.map(c=>c.funcId+'|'+c.data));
   const rangeBar=card(`<div class="p-4 flex flex-wrap items-center gap-3">
       <span class="text-sm font-semibold text-slate-700 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4 text-blue-600"></i>Ver intervalo</span>
       <input id="pr_ini" type="date" value="${pontoRange.ini}" class="px-2 py-2 border border-slate-200 rounded text-sm">
@@ -840,7 +850,8 @@ window._viewPonto = function(){
   const body=S.funcionarios.map(f=>{ let fal=0,atr=0;
     const cells=dias.map(d=>{ const ds=ymdStr(d); const r=pgRow(f.id,ds); const st=r?r.status:'Normal'; if(st==='Falta')fal++; if(st==='Atraso')atr++;
       const [ab,cl]=ST_AB[st]||['?','']; const tip=r?`${r.entrada_1||''}${r.saida_1?'-'+r.saida_1:''} ${r.horas_trabalhadas?Number(r.horas_trabalhadas).toFixed(1)+'h':''}`.trim():'';
-      return `<td class="text-center p-0"><button onclick="editarDia(${f.id},'${ds}')" class="w-7 h-6 text-[11px] rounded ${cl} hover:ring-2 hover:ring-blue-300" title="${(tip||st)} — clique p/ editar">${ab}</button></td>`;
+      const conf=confSet.has(f.id+'|'+ds);
+      return `<td class="text-center p-0"><button onclick="editarDia(${f.id},'${ds}')" class="w-7 h-6 text-[11px] rounded ${cl} ${conf?'ring-2 ring-amber-500':'hover:ring-2 hover:ring-blue-300'}" title="${conf?'⚠ Dobra + HE no mesmo dia — conferir. ':''}${(tip||st)} — clique p/ editar">${ab}</button></td>`;
     }).join('');
     const b=bancoGrid(f.id);
     return `<tr class="border-b border-slate-100 hover:bg-blue-50/30 pntrow" data-n="${(f.nome||'').toLowerCase()}"><td class="px-3 py-1.5 font-medium text-slate-800 sticky left-0 bg-white whitespace-nowrap">${f.nome.split(' ').slice(0,2).join(' ')}</td>${cells}
@@ -849,7 +860,22 @@ window._viewPonto = function(){
       <td class="text-center bg-slate-50 font-semibold ${b.banco?(b.banco>=0?'text-green-600':'text-red-600'):'text-slate-300'}">${b.banco?fmtMin(b.banco):'—'}</td>
       <td class="text-center bg-slate-50 font-bold ${b.pagar>0?'text-red-600':'text-slate-300'}">${b.pagar>0?fmtMin(b.pagar):'—'}</td></tr>`;
   }).join('');
-  return header + rangeBar
+  const painelConf = confList.length ? card(`<div class="p-4 border-2 border-amber-300 bg-amber-50/60">
+      <div class="flex items-center gap-2 mb-2"><i data-feather="alert-triangle" class="w-5 h-5 text-amber-600"></i>
+        <h3 class="font-bold text-amber-800">Conferência: dobra + hora extra no mesmo dia <span class="badge bg-amber-200 text-amber-800 ml-1">${confList.length}</span></h3></div>
+      <p class="text-xs text-amber-700 mb-3">Pelo acordo, quem dobra recebe o valor da dobra e bate o ponto no horário normal — <strong>não deve haver HE</strong> nesse dia. Confira cada caso: <strong>Manter HE</strong> mantém a hora extra (exceção) ou <strong>Zerar HE</strong> ajusta o banco para 0.</p>
+      <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="text-amber-800/70 text-left"><tr><th class="px-2 py-1">Funcionário</th><th class="px-2 py-1">Dia</th><th class="px-2 py-1 text-right">HE registrada</th><th class="px-2 py-1 text-center">Ação</th></tr></thead><tbody>
+        ${confList.map(c=>`<tr class="border-t border-amber-200">
+          <td class="px-2 py-1.5 font-medium text-slate-800">${c.nome.split(' ').slice(0,2).join(' ')}</td>
+          <td class="px-2 py-1.5">${c.data.split('-').reverse().join('/')}</td>
+          <td class="px-2 py-1.5 text-right font-semibold text-red-600">${fmtMin(c.banco)}</td>
+          <td class="px-2 py-1.5 text-center whitespace-nowrap">
+            <button onclick="editarDia(${c.funcId},'${c.data}')" class="px-2 py-1 border border-slate-300 text-slate-600 rounded hover:bg-slate-100 mr-1">Ver dia</button>
+            <button onclick="conferirHE(${c.id})" class="px-2 py-1 border border-amber-400 text-amber-700 rounded hover:bg-amber-100 mr-1">Manter HE</button>
+            <button onclick="zerarHEDobra(${c.id})" class="px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700">Zerar HE</button>
+          </td></tr>`).join('')}
+      </tbody></table></div></div>`,'mb-4') : '';
+  return header + rangeBar + painelConf
   + `<div class="mb-3 flex items-center gap-2 text-sm text-slate-600"><i data-feather="clock" class="w-4 h-4 text-blue-600"></i>HE: acima de <input type="number" step="0.5" min="0" value="${limite}" onchange="salvarLimiteHE(this.value)" class="w-16 px-2 py-1 border border-slate-200 rounded text-right">h/dia → <span class="badge bg-red-100 text-red-700">pagar</span>; até o limite → <span class="badge bg-green-100 text-green-700">banco</span>.</div>`
   + `<div class="p-4 mb-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between flex-wrap gap-2">
       <div class="flex items-center gap-3"><i data-feather="upload-cloud" class="w-5 h-5 text-blue-600"></i>
