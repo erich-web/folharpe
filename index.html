@@ -780,7 +780,7 @@ window.salvarResultadoComissao = async function(){
     adiant_salario:r.adiantSalario||0, adiant_anterior:(r.adiantSalPago||0)+(r.adiantComPago||0), tipo_pagamento:c.tipo }));
   const { error }=await sb.from('comissao_resultado').insert(recs);
   if(error){ alert('Erro ao salvar: '+error.message); return; }
-  await sb.from('pagamentos').delete().eq('periodo_id',p.id);
+  await sb.from('pagamentos').delete().eq('periodo_id',p.id).neq('ciclo','Extras e Dobras');
   await sb.from('pagamentos').insert({ restaurante_id:S.restaurante.id, periodo_id:p.id, ciclo:TIPO_PAG[c.tipo]||c.tipo,
     data_pagamento:p.data_pagamento, apuracao:`${fmtDM(new Date(p.data_inicio+'T00:00:00'))}–${fmtDM(new Date(p.data_fim+'T00:00:00'))}`,
     colaboradores:c.rows.length, total_comissao:c.totalComissao, total_folha:c.totalPagar, status:'Previsto' });
@@ -928,6 +928,7 @@ const MESES_F=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Ag
 const DOW3=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 let extrasMes={ano:new Date().getFullYear(), mes:new Date().getMonth()+1};
 let atribForm=null;
+let extrasRelPeriodoId=null;
 
 /* ---- helpers de valor/período (globais; usados também no cálculo da comissão) ---- */
 const PERIODO_LBL={almoco:'Almoço',jantar:'Jantar',ambos:'Almoço e Jantar'};
@@ -985,7 +986,21 @@ window.aprovarRH=async function(id,ok){
   const { error }=await sb.from('solicitacoes_extra').update(upd).eq('id',id); if(error){ alert('Erro: '+error.message); return; }
   await reloadSolic(); render();
 };
-window.excluirSolic=async function(id){ if(!confirm('Excluir esta unidade de extra?'))return; await sb.from('solicitacoes_extra').delete().eq('id',id); await reloadSolic(); render(); };
+window.excluirSolic=async function(id){ if(!confirm('Excluir esta unidade de extra/dobra? Esta ação é definitiva.'))return; await sb.from('solicitacoes_extra').delete().eq('id',id); await reloadSolic(); render(); };
+window.setExtrasRelPeriodo=function(v){ extrasRelPeriodoId=+v||null; render(); };
+window.salvarRelatorioExtras=async function(){
+  const pid=extrasRelPeriodoId||S.periodoAtual?.id; const p=S.periodos.find(x=>x.id===+pid);
+  if(!p){ alert('Selecione um período para o relatório.'); return; }
+  const prov=S.solicitacoes.filter(s=>s.provisionado && s.data>=p.data_inicio && s.data<=p.data_fim);
+  if(!prov.length && !confirm('Não há extras/dobras provisionados neste período. Salvar mesmo assim (relatório zerado)?')) return;
+  const total=prov.reduce((a,s)=>a+custoUnit(s),0);
+  const apur=`${fmtDM(new Date(p.data_inicio+'T00:00:00'))}–${fmtDM(new Date(p.data_fim+'T00:00:00'))}`;
+  await sb.from('pagamentos').delete().eq('periodo_id',p.id).eq('ciclo','Extras e Dobras');
+  const { error }=await sb.from('pagamentos').insert({ restaurante_id:S.restaurante.id, periodo_id:p.id, ciclo:'Extras e Dobras', data_pagamento:p.data_pagamento, apuracao:apur, colaboradores:prov.length, total_comissao:0, total_folha:total, status:'Previsto' });
+  if(error){ alert('Erro ao salvar: '+error.message); return; }
+  await carregarDados(); render(); alert('Relatório de extras e dobras salvo na página Relatórios ('+apur+' · '+money(total)+').');
+};
+window.excluirRelatorio=async function(id){ if(!confirm('Excluir este relatório do histórico? Remove só o registro em Relatórios — não apaga os dados de comissão, ponto ou extras.'))return; await sb.from('pagamentos').delete().eq('id',id); await carregarDados(); render(); };
 
 /* ===================== EXTRAS (RH: calendário, custo, provisão) ===================== */
 window._viewExtras=function(){
@@ -1044,20 +1059,28 @@ window._viewExtras=function(){
           <td class="px-2 py-1.5 text-right font-semibold">${money(custoUnit(s))}</td>
           <td class="px-2 py-1.5 text-center">${ggBadge(s)}</td>
           <td class="px-2 py-1.5 text-center">${rhBadge(s)}</td>
-          <td class="px-2 py-1.5 text-center">${acao}</td>
+          <td class="px-2 py-1.5 text-center"><div class="flex items-center justify-center gap-2">${acao}${podeEscrever('extras')?`<button onclick="excluirSolic(${s.id})" class="text-slate-300 hover:text-red-500" title="excluir esta unidade"><i data-feather="trash-2" class="w-3.5 h-3.5"></i></button>`:''}</div></td>
         </tr>`;}).join(''):'<tr><td colspan="9" class="text-center text-slate-400 py-6">Nenhuma solicitação neste mês.</td></tr>'}
       </tbody></table></div>
       <div class="mt-3 text-[11px] text-slate-500 flex items-center gap-2"><i data-feather="link" class="w-3.5 h-3.5"></i>Provisão acontece quando <strong>GG</strong> e <strong>RH</strong> aprovam a unidade. Custo provisionado (${money(custoMes)}) alimenta "Gasto com extras" na Comissão.</div></div>`);
-  const aPagar=provMes.slice().sort((a,b)=>a.data.localeCompare(b.data)||a.tipo.localeCompare(b.tipo));
-  const totFreel=provMes.filter(s=>s.tipo_pessoa==='freelancer').reduce((a,s)=>a+custoUnit(s),0);
-  const totFunc=provMes.filter(s=>s.tipo_pessoa==='funcionario').reduce((a,s)=>a+custoUnit(s),0);
-  const totDef=provMes.filter(s=>!s.tipo_pessoa).reduce((a,s)=>a+custoUnit(s),0);
+  const relP=S.periodos.find(x=>x.id===(extrasRelPeriodoId||S.periodoAtual?.id))||S.periodos[0]||null;
+  const labelPeriodo=p=>`${TIPO_PAG[p.tipo_pagamento]||p.tipo_pagamento} · ${fmtDM(new Date(p.data_inicio+'T00:00:00'))}–${fmtDM(new Date(p.data_fim+'T00:00:00'))}`;
+  const aPagar=relP?S.solicitacoes.filter(s=>s.provisionado && s.data>=relP.data_inicio && s.data<=relP.data_fim).sort((a,b)=>a.data.localeCompare(b.data)||a.tipo.localeCompare(b.tipo)):[];
+  const totFreel=aPagar.filter(s=>s.tipo_pessoa==='freelancer').reduce((a,s)=>a+custoUnit(s),0);
+  const totFunc=aPagar.filter(s=>s.tipo_pessoa==='funcionario').reduce((a,s)=>a+custoUnit(s),0);
+  const totDef=aPagar.filter(s=>!s.tipo_pessoa).reduce((a,s)=>a+custoUnit(s),0);
   const totAll=totFreel+totFunc+totDef;
   const pessoaBadge=s=>s.tipo_pessoa==='funcionario'?'<span class="badge bg-blue-50 text-blue-600">Funcionário</span>':s.tipo_pessoa==='freelancer'?'<span class="badge bg-amber-50 text-amber-700">Freelancer</span>':'<span class="badge bg-slate-100 text-slate-400">A definir</span>';
-  const relES=card(`<div class="p-5"><div class="flex items-center justify-between mb-3"><h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="dollar-sign" class="w-4 h-4 text-amber-600"></i>Extras e dobras a pagar (${MESES_F[mes-1]})</h3><button onclick="window.print()" class="px-3 py-1.5 border border-slate-200 rounded text-xs hover:bg-slate-100 flex items-center gap-1"><i data-feather="printer" class="w-3.5 h-3.5"></i>Imprimir</button></div>
-      <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-2 py-2 text-left">Data</th><th class="px-2 py-2 text-left">Tipo</th><th class="px-2 py-2 text-left">Quem recebe</th><th class="px-2 py-2 text-left">Nome</th><th class="px-2 py-2 text-left">CPF</th><th class="px-2 py-2 text-left">Período</th><th class="px-2 py-2 text-left">Setor</th><th class="px-2 py-2 text-right">Valor</th></tr></thead><tbody>
-      ${aPagar.length?aPagar.map(s=>`<tr class="border-b border-slate-100"><td class="px-2 py-1.5">${s.data.slice(8,10)}/${s.data.slice(5,7)}</td><td class="px-2 py-1.5">${tipoBadgeED(s.tipo)}</td><td class="px-2 py-1.5">${pessoaBadge(s)}</td><td class="px-2 py-1.5 font-medium text-slate-700">${pessoaUnit(s)}</td><td class="px-2 py-1.5 text-slate-500">${s.tipo_pessoa==='freelancer'?(s.cpf_freelancer||'—'):'—'}</td><td class="px-2 py-1.5">${periodoBadge(s.periodo)}</td><td class="px-2 py-1.5">${setorBadge(s.setores?.nome)}</td><td class="px-2 py-1.5 text-right font-semibold">${money(custoUnit(s))}</td></tr>`).join(''):'<tr><td colspan="8" class="text-center text-slate-400 py-5">Nenhuma extra ou dobra provisionada neste mês.</td></tr>'}
-      </tbody>${aPagar.length?`<tfoot><tr class="bg-slate-50 font-bold"><td colspan="7" class="px-2 py-2 text-right">Total a pagar</td><td class="px-2 py-2 text-right text-amber-700">${money(totAll)}</td></tr></tfoot>`:''}</table></div>
+  const podeED=podeEscrever('extras');
+  const relPeriodoSel=`<select onchange="setExtrasRelPeriodo(this.value)" class="px-2 py-1.5 border border-slate-200 rounded text-sm">${S.periodos.map(p=>`<option value="${p.id}" ${relP&&p.id===relP.id?'selected':''}>${labelPeriodo(p)}</option>`).join('')||'<option>sem períodos</option>'}</select>`;
+  const relES=card(`<div class="p-5"><div class="flex items-center justify-between mb-3 flex-wrap gap-2"><h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="dollar-sign" class="w-4 h-4 text-amber-600"></i>Extras e dobras a pagar — por período</h3>
+        <div class="flex items-center gap-2 flex-wrap">${relPeriodoSel}
+          ${podeED?`<button onclick="salvarRelatorioExtras()" class="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-medium hover:bg-emerald-700 flex items-center gap-1"><i data-feather="save" class="w-3.5 h-3.5"></i>Salvar em Relatórios</button>`:''}
+          <button onclick="window.print()" class="px-3 py-1.5 border border-slate-200 rounded text-xs hover:bg-slate-100 flex items-center gap-1"><i data-feather="printer" class="w-3.5 h-3.5"></i>Imprimir</button></div></div>
+      <p class="text-xs text-slate-500 mb-3">${relP?`Provisionados de <strong>${labelPeriodo(relP)}</strong>`:'Selecione um período'}. "Salvar em Relatórios" gera um registro no histórico (como adiantamento/oficial/rescisão), com PDF.</p>
+      <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-2 py-2 text-left">Data</th><th class="px-2 py-2 text-left">Tipo</th><th class="px-2 py-2 text-left">Quem recebe</th><th class="px-2 py-2 text-left">Nome</th><th class="px-2 py-2 text-left">CPF</th><th class="px-2 py-2 text-left">Período</th><th class="px-2 py-2 text-left">Setor</th><th class="px-2 py-2 text-right">Valor</th>${podeED?'<th class="px-2 py-2 text-center"></th>':''}</tr></thead><tbody>
+      ${aPagar.length?aPagar.map(s=>`<tr class="border-b border-slate-100"><td class="px-2 py-1.5">${s.data.slice(8,10)}/${s.data.slice(5,7)}</td><td class="px-2 py-1.5">${tipoBadgeED(s.tipo)}</td><td class="px-2 py-1.5">${pessoaBadge(s)}</td><td class="px-2 py-1.5 font-medium text-slate-700">${pessoaUnit(s)}</td><td class="px-2 py-1.5 text-slate-500">${s.tipo_pessoa==='freelancer'?(s.cpf_freelancer||'—'):'—'}</td><td class="px-2 py-1.5">${periodoBadge(s.periodo)}</td><td class="px-2 py-1.5">${setorBadge(s.setores?.nome)}</td><td class="px-2 py-1.5 text-right font-semibold">${money(custoUnit(s))}</td>${podeED?`<td class="px-2 py-1.5 text-center"><button onclick="excluirSolic(${s.id})" class="text-slate-300 hover:text-red-500" title="excluir esta unidade"><i data-feather="trash-2" class="w-3.5 h-3.5"></i></button></td>`:''}</tr>`).join(''):`<tr><td colspan="${podeED?9:8}" class="text-center text-slate-400 py-5">Nenhuma extra ou dobra provisionada neste período.</td></tr>`}
+      </tbody>${aPagar.length?`<tfoot><tr class="bg-slate-50 font-bold"><td colspan="7" class="px-2 py-2 text-right">Total a pagar</td><td class="px-2 py-2 text-right text-amber-700">${money(totAll)}</td>${podeED?'<td></td>':''}</tr></tfoot>`:''}</table></div>
       ${aPagar.length?`<p class="text-[11px] text-slate-500 mt-3 flex items-center gap-2"><i data-feather="info" class="w-3.5 h-3.5"></i>Funcionários (${money(totFunc)}) entram na <strong>comissão quinzenal</strong> (pago por fora); freelancers (${money(totFreel)}) são pagos direto.${totDef>0?` <span class="text-amber-600">${money(totDef)} ainda sem pessoa definida — atribua na lista acima.</span>`:''}</p>`:''}
       </div>`);
   return pageHeader('Extras (RH)','Calendário, custo provisionado e provisão de pagamento')
@@ -1108,6 +1131,7 @@ window._viewRelatorios = function(){
         <td class="px-4 py-3 text-center"><div class="flex items-center justify-center gap-3">
           <button onclick="abrirRelatorioPeriodo(${h.periodo_id})" class="text-blue-600 hover:underline text-xs" title="abrir o período na Comissão">Abrir</button>
           <button onclick="gerarRelatorioPDF(${h.id})" class="text-purple-600 hover:underline text-xs inline-flex items-center gap-1" title="baixar o relatório do período em PDF"><i data-feather="download" class="w-3 h-3"></i>PDF</button>
+          ${podeEscrever('relatorios')?`<button onclick="excluirRelatorio(${h.id})" class="text-slate-300 hover:text-red-500" title="excluir relatório do histórico"><i data-feather="trash-2" class="w-3.5 h-3.5"></i></button>`:''}
         </div></td>
       </tr>`).join('')||'<tr><td colspan="8" class="text-center text-slate-400 py-8">Nenhum fechamento salvo ainda. Salve um na Comissão Quinzenal.</td></tr>'}
       </tbody></table></div>`);
@@ -1117,6 +1141,7 @@ window.abrirRelatorioPeriodo = async function(periodoId){ if(!periodoId){ alert(
 window.gerarRelatorioPDF = async function(pagId){
   if(!window.jspdf){ alert('Biblioteca de PDF não carregou. Recarregue a página.'); return; }
   const h=S.pagamentos.find(x=>x.id===pagId); if(!h){ alert('Pagamento não encontrado.'); return; }
+  if(String(h.ciclo||'').toLowerCase().includes('extra')) return gerarExtrasPDF(h);
   const { data, error }=await sb.from('comissao_resultado').select('*, funcionarios(nome)').eq('periodo_id',h.periodo_id);
   if(error){ alert('Erro ao carregar o relatório: '+error.message); return; }
   const rows=(data||[]).slice().sort((a,b)=>(a.setor||'').localeCompare(b.setor||'')||((Number(b.total)||0)-(Number(a.total)||0)));
@@ -1149,6 +1174,40 @@ window.gerarRelatorioPDF = async function(pagId){
   doc.text(fmt(sum('adic_noturno_valor')),230,y,{align:'right'}); doc.text(fmt(sum('total')),R,y,{align:'right'});
   doc.save('relatorio-'+String(h.ciclo||'').toLowerCase().replace(/\s+/g,'-')+'-'+(h.data_pagamento||'')+'.pdf');
 };
+async function gerarExtrasPDF(h){
+  const p=S.periodos.find(x=>x.id===h.periodo_id);
+  const ini=p?p.data_inicio:null, fim=p?p.data_fim:null;
+  let q=sb.from('solicitacoes_extra').select('*, setores(nome), funcionarios(nome)').eq('provisionado',true);
+  if(ini&&fim) q=q.gte('data',ini).lte('data',fim);
+  const { data, error }=await q;
+  if(error){ alert('Erro ao carregar: '+error.message); return; }
+  const rows=(data||[]).slice().sort((a,b)=>a.data.localeCompare(b.data)||(a.tipo||'').localeCompare(b.tipo||''));
+  if(!rows.length){ alert('Não há extras/dobras provisionados neste período para gerar o PDF.'); return; }
+  const nomeDe=s=>s.tipo_pessoa==='funcionario'?(s.funcionarios?.nome||'Funcionário'):s.tipo_pessoa==='freelancer'?(s.nome_freelancer||'Freelancer'):'— a definir —';
+  const { jsPDF }=window.jspdf; const doc=new jsPDF({unit:'mm',format:'a4'});
+  const fmt=v=>(Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const L=12, R=198; let y=14;
+  doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.text(EMPRESA.nome,L,y);
+  doc.setFontSize(10); doc.text('EXTRAS E DOBRAS A PAGAR',R,y,{align:'right'}); y+=5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8);
+  doc.text(`Período: ${h.apuracao||'—'}`,L,y); doc.text(`Pagamento: ${h.data_pagamento?h.data_pagamento.split('-').reverse().join('/'):'—'}`,R,y,{align:'right'}); y+=4;
+  const tFunc=rows.filter(s=>s.tipo_pessoa==='funcionario').reduce((a,s)=>a+custoUnit(s),0);
+  const tFree=rows.filter(s=>s.tipo_pessoa==='freelancer').reduce((a,s)=>a+custoUnit(s),0);
+  doc.text(`Unidades: ${rows.length}    Funcionários: R$ ${fmt(tFunc)} (vão p/ comissão)    Freelancers: R$ ${fmt(tFree)} (pagto direto)`,L,y); y+=4;
+  doc.setDrawColor(150); doc.line(L,y,R,y); y+=4.5;
+  const cols=[ {x:L,label:'Data',get:s=>s.data.slice(8,10)+'/'+s.data.slice(5,7),align:'left'},{x:28,label:'Tipo',get:s=>s.tipo==='dobra'?'Dobra':'Extra',align:'left'},
+    {x:46,label:'Recebe',get:s=>s.tipo_pessoa==='funcionario'?'Func.':s.tipo_pessoa==='freelancer'?'Freela':'—',align:'left'},
+    {x:66,label:'Nome',get:s=>nomeDe(s),align:'left',w:42},{x:112,label:'CPF',get:s=>s.tipo_pessoa==='freelancer'?(s.cpf_freelancer||'—'):'—',align:'left',w:28},
+    {x:144,label:'Período',get:s=>(PERIODO_LBL[s.periodo]||s.periodo||'').slice(0,8),align:'left'},{x:168,label:'Setor',get:s=>(s.setores?.nome||'—').slice(0,10),align:'left'},{x:R,label:'Valor',get:s=>fmt(custoUnit(s)),align:'right'} ];
+  function cab(){ doc.setFont('helvetica','bold'); doc.setFontSize(7.5); cols.forEach(c=>doc.text(c.label,c.x,y,c.align==='right'?{align:'right'}:undefined)); y+=1.6; doc.line(L,y,R,y); y+=3.6; doc.setFont('helvetica','normal'); doc.setFontSize(7.5); }
+  cab();
+  rows.forEach(s=>{ if(y>280){ doc.addPage(); y=14; cab(); }
+    cols.forEach(c=>{ let t=String(c.get(s)); if(c.align==='left'&&c.w){ while(doc.getTextWidth(t)>c.w && t.length>3){ t=t.slice(0,-2); } } doc.text(t,c.x,y,c.align==='right'?{align:'right'}:undefined); });
+    y+=4.4; });
+  y+=1; doc.setDrawColor(150); doc.line(L,y,R,y); y+=4.4; doc.setFont('helvetica','bold'); doc.setFontSize(9);
+  doc.text('TOTAL A PAGAR',L,y); doc.text('R$ '+fmt(rows.reduce((a,s)=>a+custoUnit(s),0)),R,y,{align:'right'});
+  doc.save('extras-dobras-'+(h.data_pagamento||'')+'.pdf');
+}
 </script>
 <script>
 /* ===================== IMPORTAÇÃO CARTÃO SECULLUM (PDF via pdf.js) ===================== */
