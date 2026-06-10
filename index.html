@@ -252,7 +252,7 @@ const PAGES=[
 const ACESSO={ admin:['dashboard','cadastro','config','ponto','escala','extras','comissao','ranking','holerite','relatorios','usuarios'],
   rh:['dashboard','cadastro','ponto','escala','extras','comissao','ranking','holerite','relatorios'],
   lider:['dashboard','ponto','escala','relatorios'],
-  gerente:['dashboard','relatorios'],
+  gerente:['dashboard','escala','relatorios'],
   viewer:['dashboard','comissao','relatorios'] };
 function papel(){ return S.perfil?.papel || 'viewer'; }
 function podeVer(id){ return (ACESSO[papel()]||ACESSO.viewer).includes(id); }
@@ -1615,13 +1615,44 @@ const addDias=(ds,n)=>{const d=new Date(ds+'T00:00:00');d.setDate(d.getDate()+n)
 async function carregarEscala(){
   const MM=String(escMes).padStart(2,'0'); const ini=`${escAno}-${MM}-01`;
   const fimD=new Date(escAno,escMes,0); const fim=`${escAno}-${MM}-${String(fimD.getDate()).padStart(2,'0')}`;
-  const [e,m,mh]=await Promise.all([
+  const [e,m,mh,env]=await Promise.all([
     sb.from('escala').select('*').eq('setor_id',escSetor).gte('data',addDias(ini,-7)).lte('data',addDias(fim,7)).order('data'),
     sb.from('escala_minimo').select('*').eq('setor_id',escSetor),
     sb.from('escala_meta_hora').select('*'),
+    sb.from('escala_envio').select('*, setores(nome)').eq('status','pendente').order('enviado_em',{ascending:true}),
   ]);
   S.escala=e.data||[]; S.escalaMin=m.data||[]; S.escalaMetaHora=mh.data||[];
+  S.escalaEnvios=env.data||[];
+  if(S.escalaEnvios.length){
+    const semanas=[...new Set(S.escalaEnvios.map(x=>x.semana_inicio))];
+    const setoresP=[...new Set(S.escalaEnvios.map(x=>x.setor_id))];
+    const rr=await sb.from('escala_rascunho').select('setor_id,semana_inicio,nome,data,status,periodo').in('semana_inicio',semanas).in('setor_id',setoresP);
+    S.escalaRascunhoPend=rr.data||[];
+  } else { S.escalaRascunhoPend=[]; }
 }
+window.aceitarEscala = async function(envioId){
+  const env=(S.escalaEnvios||[]).find(x=>x.id===envioId); if(!env) return;
+  if(!confirm(`Aceitar a escala de ${env.setores?.nome||'setor'} da semana de ${env.semana_inicio.slice(8,10)}/${env.semana_inicio.slice(5,7)}? Ela substitui a escala publicada desta semana.`)) return;
+  const ini=env.semana_inicio, fim=addDias(ini,6);
+  const { data:rasc, error:e0 }=await sb.from('escala_rascunho').select('*').eq('setor_id',env.setor_id).gte('data',ini).lte('data',fim);
+  if(e0){ alert('Erro ao ler rascunho: '+e0.message); return; }
+  // substitui a escala publicada desta semana/setor
+  const { error:e1 }=await sb.from('escala').delete().eq('setor_id',env.setor_id).gte('data',ini).lte('data',fim);
+  if(e1){ alert('Erro ao limpar escala: '+e1.message); return; }
+  if(rasc&&rasc.length){
+    const recs=rasc.map(r=>({restaurante_id:r.restaurante_id||1,setor_id:r.setor_id,funcionario_id:r.funcionario_id,nome:r.nome,cargo:r.cargo,data:r.data,status:r.status,entrada:r.entrada,saida:r.saida,periodo:r.periodo,obs:r.obs}));
+    const { error:e2 }=await sb.from('escala').insert(recs);
+    if(e2){ alert('Erro ao publicar escala: '+e2.message); return; }
+  }
+  await sb.from('escala_envio').update({status:'aprovada',decidido_por:S.perfil?.nome||S.session?.user?.email||'GG',decidido_em:new Date().toISOString()}).eq('id',envioId);
+  await carregarEscala(); render();
+  alert('Escala aceita e publicada.');
+};
+window.rejeitarEscala = async function(envioId){
+  const motivo=prompt('Motivo da rejeição (opcional):')||'';
+  await sb.from('escala_envio').update({status:'rejeitada',decidido_por:S.perfil?.nome||S.session?.user?.email||'GG',decidido_em:new Date().toISOString(),motivo}).eq('id',envioId);
+  await carregarEscala(); render();
+};
 /* ---- estrutura por hora ---- */
 const hToNum=t=>{ if(!t)return null; const[a,b]=String(t).split(':'); return (+a)+((+b||0)/60); };
 function horasOperacao(){ let minS=24,maxE=0,any=false;
@@ -1734,7 +1765,16 @@ window._viewEscala=function(){
       <span class="text-slate-300 hidden md:inline">|</span>
       <div class="flex items-center gap-1"><button onclick="escSemana(${escSemanaIdx-1})" class="p-1.5 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-left" class="w-4 h-4"></i></button><span class="text-sm text-slate-600">Sem ${escSemanaIdx+1}/${ws.length} · ${semInfo}</span><button onclick="escSemana(${escSemanaIdx+1})" class="p-1.5 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-right" class="w-4 h-4"></i></button></div>
     </div>`,'mb-4');
-  return pageHeader('Escala','Monte e otimize a escala por setor, semana e período · BETA')+nav+addBox+grid
+  const envios=S.escalaEnvios||[]; const rpend=S.escalaRascunhoPend||[]; const podeAceitar=['gerente','admin'].includes(S.perfil?.papel);
+  const aprovBox = envios.length ? card(`<div class="p-4 border-2 border-amber-300 bg-amber-50/50">
+      <div class="flex items-center gap-2 mb-2"><i data-feather="inbox" class="w-5 h-5 text-amber-600"></i><h3 class="font-bold text-amber-800">Escalas enviadas pelos líderes — aprovação <span class="badge bg-amber-200 text-amber-800 ml-1">${envios.length}</span></h3></div>
+      <div class="space-y-2">${envios.map(en=>{ const cells=rpend.filter(r=>r.setor_id===en.setor_id&&r.semana_inicio===en.semana_inicio); const np=new Set(cells.map(c=>c.nome)).size; const nt=cells.filter(c=>c.status==='trabalha').length; const dom=addDias(en.semana_inicio,6);
+        return `<div class="flex items-center justify-between gap-2 p-2 bg-white border border-amber-200 rounded flex-wrap">
+          <div class="text-sm"><strong>${en.setores?.nome||('Setor '+en.setor_id)}</strong> · semana ${en.semana_inicio.slice(8,10)}/${en.semana_inicio.slice(5,7)}–${dom.slice(8,10)}/${dom.slice(5,7)} <span class="text-slate-400">· ${np} pessoas · ${nt} turnos</span><br><span class="text-[11px] text-slate-400">enviado por ${en.enviado_por||'—'}${en.enviado_em?' · '+new Date(en.enviado_em).toLocaleDateString('pt-BR'):''}</span></div>
+          ${podeAceitar?`<div class="flex gap-2"><button onclick="aceitarEscala(${en.id})" class="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 flex items-center gap-1"><i data-feather="check" class="w-3.5 h-3.5"></i>Aceitar</button><button onclick="rejeitarEscala(${en.id})" class="px-3 py-1.5 bg-rose-100 text-rose-700 rounded text-xs font-medium hover:bg-rose-200">Rejeitar</button></div>`:'<span class="badge bg-amber-100 text-amber-700">aguardando GG</span>'}
+        </div>`;}).join('')}</div>
+      <p class="text-[11px] text-amber-700 mt-2">Aceitar <strong>substitui</strong> a escala publicada daquela semana/setor pela versão enviada pelo líder (na página externa "Montar Escala").</p></div>`,'mb-4') : '';
+  return pageHeader('Escala','Monte e otimize a escala por setor, semana e período · BETA')+aprovBox+nav+addBox+grid
     +`<div class="mt-4">${estruturaBox}</div>`
     +`<div class="mt-4">${metaBox}</div>`
     +`<div class="mt-4">${sugBox}</div>`

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Montar Escala · Amauri</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/feather-icons"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>.badge{display:inline-flex;align-items:center;padding:1px 8px;border-radius:9999px;font-size:11px;font-weight:600}.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px}.animate-fade{animation:f .2s ease}@keyframes f{from{opacity:0;transform:translateY(4px)}to{opacity:1}}</style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+<div id="root"></div>
+<div id="modalHost"></div>
+<script>
+const SUPABASE_URL='https://kzizdoydveqvxycekxla.supabase.co';
+const SUPABASE_KEY='sb_publishable_VTPAgxA-SpD21Fb9kHxVjg_bOkcFrXa';
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+const DOWF=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+const PERLBL={almoco:'Almoço',jantar:'Jantar',ambos:'Almoço e Jantar'};
+const STLBL={trabalha:'Trabalha',folga:'Folga',ferias:'Férias',atestado:'Atestado'};
+const hoje=()=>new Date().toISOString().slice(0,10);
+const mondayOf=ds=>{const d=new Date(ds+'T00:00:00');const wd=(d.getDay()+6)%7;d.setDate(d.getDate()-wd);return d.toISOString().slice(0,10);};
+const addDias=(ds,n)=>{const d=new Date(ds+'T00:00:00');d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);};
+const val=id=>(document.getElementById(id)||{}).value;
+const setorNome=id=>(S.setores.find(s=>s.id===id)||{}).nome||'—';
+const S={session:null,perfil:null,setores:[],funcionarios:[],selSetor:1,semana:mondayOf(hoje()),
+  rascunho:[],envio:null,edit:null,addOpen:false,loading:true,erro:null,ok:null};
+
+async function boot(){ const {data:{session}}=await sb.auth.getSession(); S.session=session; if(session)await carregar(); S.loading=false; render(); }
+sb.auth.onAuthStateChange((_e,session)=>{ S.session=session; });
+async function entrar(){ S.erro=null; const {error}=await sb.auth.signInWithPassword({email:val('login_email'),password:val('login_senha')}); if(error){S.erro='E-mail ou senha inválidos.';render();return;} const {data:{session}}=await sb.auth.getSession(); S.session=session; S.loading=true; render(); await carregar(); S.loading=false; render(); }
+async function sair(){ await sb.auth.signOut(); S.session=null; S.perfil=null; render(); }
+
+async function carregar(){
+  const uid=S.session.user.id;
+  const [prof,set,fun]=await Promise.all([
+    sb.from('profiles').select('*').eq('id',uid).single(),
+    sb.from('setores').select('id,nome').eq('restaurante_id',1).order('ordem'),
+    sb.from('funcionarios').select('id,nome, cargos(nome,setor_id)').eq('restaurante_id',1).order('nome'),
+  ]);
+  S.perfil=prof.data; S.setores=set.data||[]; S.funcionarios=fun.data||[];
+  await carregarSemana();
+}
+async function carregarSemana(){
+  const ini=S.semana, fim=addDias(ini,6);
+  const [r,e]=await Promise.all([
+    sb.from('escala_rascunho').select('*').eq('setor_id',S.selSetor).gte('data',ini).lte('data',fim).order('nome'),
+    sb.from('escala_envio').select('*').eq('setor_id',S.selSetor).eq('semana_inicio',ini).maybeSingle(),
+  ]);
+  S.rascunho=r.data||[]; S.envio=e.data||null;
+}
+function podeMontar(){ return ['lider','rh','admin','gerente'].includes(S.perfil?.papel); }
+
+const dias=()=>[0,1,2,3,4,5,6].map(i=>addDias(S.semana,i));
+function pessoas(){ const m={}; (S.rascunho||[]).forEach(r=>{ if(!m[r.nome]) m[r.nome]={nome:r.nome,cargo:r.cargo,funcionario_id:r.funcionario_id}; }); return Object.values(m).sort((a,b)=>a.nome.localeCompare(b.nome)); }
+function cel(nome,data){ return (S.rascunho||[]).find(r=>r.nome===nome&&r.data===data)||null; }
+function contaDia(data,per){ return (S.rascunho||[]).filter(r=>r.data===data&&r.status==='trabalha'&&(r.periodo===per||r.periodo==='ambos')).length; }
+
+/* ---- navegação ---- */
+window.setSetor=async function(v){ S.selSetor=+v; await carregarSemana(); render(); };
+window.navSemana=async function(d){ S.semana=addDias(S.semana,d*7); await carregarSemana(); render(); };
+
+/* ---- editor de célula ---- */
+window.abrirEditor=function(nome,data){ const p=pessoas().find(x=>x.nome===nome)||{}; const c=cel(nome,data)||{}; S.edit={nome,data,cargo:p.cargo,funcionario_id:p.funcionario_id,status:c.status||'trabalha',entrada:c.entrada||'',saida:c.saida||'',periodo:c.periodo||'almoco'}; paint(); };
+window.fecharEditor=function(){ S.edit=null; paint(); };
+window.edSet=function(k,v){ S.edit[k]=v; if(k==='status')paint(); };
+window.salvarCel=async function(){
+  const e=S.edit, trab=e.status==='trabalha';
+  const rec={ restaurante_id:1, setor_id:S.selSetor, semana_inicio:S.semana, funcionario_id:e.funcionario_id||null, nome:e.nome, cargo:e.cargo||null, data:e.data,
+    status:e.status, entrada:trab?(val('ed_ent')||null):null, saida:trab?(val('ed_sai')||null):null, periodo:trab?(val('ed_per')||null):null };
+  const { error }=await sb.from('escala_rascunho').upsert(rec,{onConflict:'setor_id,nome,data'});
+  if(error){ alert('Erro: '+error.message); return; }
+  await marcarEditado(); S.edit=null; await carregarSemana(); render();
+};
+window.limparCel=async function(){
+  const e=S.edit; await sb.from('escala_rascunho').delete().eq('setor_id',S.selSetor).eq('nome',e.nome).eq('data',e.data);
+  await marcarEditado(); S.edit=null; await carregarSemana(); render();
+};
+// se a semana já estava aprovada/rejeitada e o líder edita, volta a rascunho
+async function marcarEditado(){ if(S.envio && (S.envio.status==='aprovada'||S.envio.status==='rejeitada')){ await sb.from('escala_envio').update({status:'rascunho'}).eq('id',S.envio.id); } }
+
+/* ---- adicionar / remover pessoa ---- */
+window.toggleAdd=function(){ S.addOpen=!S.addOpen; paint(); };
+window.addPessoa=async function(){
+  const fid=+val('ap_func')||null; const livre=(val('ap_nome')||'').trim();
+  let nome,cargo=null,funcionario_id=null;
+  if(fid){ const f=S.funcionarios.find(x=>x.id===fid); if(!f){alert('Funcionário inválido.');return;} nome=f.nome; cargo=f.cargos?.nome||null; funcionario_id=f.id; }
+  else if(livre){ nome=livre; } else { alert('Escolha um funcionário ou digite um nome.'); return; }
+  if(pessoas().some(p=>p.nome===nome)){ alert('Essa pessoa já está na semana.'); return; }
+  const recs=dias().map(d=>({restaurante_id:1,setor_id:S.selSetor,semana_inicio:S.semana,funcionario_id,nome,cargo,data:d,status:'folga'}));
+  const { error }=await sb.from('escala_rascunho').upsert(recs,{onConflict:'setor_id,nome,data'});
+  if(error){ alert('Erro: '+error.message); return; }
+  await marcarEditado(); S.addOpen=false; await carregarSemana(); render();
+};
+window.removerPessoa=async function(nome){ if(!confirm('Remover '+nome+' desta semana?'))return; const ini=S.semana,fim=addDias(ini,6); await sb.from('escala_rascunho').delete().eq('setor_id',S.selSetor).eq('nome',nome).gte('data',ini).lte('data',fim); await marcarEditado(); await carregarSemana(); render(); };
+
+/* ---- importar escala atual (live) como base ---- */
+window.importarAtual=async function(){
+  if(S.rascunho.length && !confirm('Isto vai mesclar a escala já publicada desta semana no seu rascunho. Continuar?')) return;
+  const ini=S.semana, fim=addDias(ini,6);
+  const { data }=await sb.from('escala').select('setor_id,funcionario_id,nome,cargo,data,status,entrada,saida,periodo').eq('setor_id',S.selSetor).gte('data',ini).lte('data',fim);
+  if(!data||!data.length){ alert('Não há escala publicada nesta semana para este setor.'); return; }
+  const recs=data.map(r=>({restaurante_id:1,setor_id:S.selSetor,semana_inicio:ini,funcionario_id:r.funcionario_id,nome:r.nome,cargo:r.cargo,data:r.data,status:r.status,entrada:r.entrada,saida:r.saida,periodo:r.periodo}));
+  const { error }=await sb.from('escala_rascunho').upsert(recs,{onConflict:'setor_id,nome,data'});
+  if(error){ alert('Erro: '+error.message); return; }
+  await marcarEditado(); await carregarSemana(); render();
+};
+
+/* ---- enviar para aprovação ---- */
+window.enviar=async function(btn){
+  if(!S.rascunho.length){ alert('Monte a escala antes de enviar.'); return; }
+  const quem=S.perfil?.nome||S.session.user.email;
+  const rec={ restaurante_id:1, setor_id:S.selSetor, semana_inicio:S.semana, status:'pendente', enviado_por:quem, enviado_em:new Date().toISOString(), motivo:null };
+  if(btn){btn.disabled=true;btn.textContent='Enviando…';}
+  const { error }=await sb.from('escala_envio').upsert(rec,{onConflict:'setor_id,semana_inicio'});
+  if(error){ alert('Erro: '+error.message); render(); return; }
+  S.ok='Escala enviada para aprovação do Gerente Geral.'; await carregarSemana(); render(); setTimeout(()=>{S.ok=null;},6000);
+};
+
+function statusBadge(){
+  const st=S.envio?.status||'rascunho';
+  const map={rascunho:['Rascunho','bg-slate-100 text-slate-500'],pendente:['Aguardando aprovação','bg-amber-100 text-amber-700'],aprovada:['Aprovada','bg-emerald-100 text-emerald-700'],rejeitada:['Rejeitada','bg-rose-100 text-rose-700']};
+  const [lbl,cl]=map[st]||map.rascunho;
+  return `<span class="badge ${cl}">${lbl}</span>${st==='rejeitada'&&S.envio?.motivo?` <span class="text-xs text-rose-600">· ${S.envio.motivo}</span>`:''}`;
+}
+
+function viewLogin(){
+  return `<div class="min-h-screen flex items-center justify-center p-4"><div class="w-full max-w-sm">
+    <div class="flex flex-col items-center mb-6"><div class="w-14 h-14 bg-gradient-to-br from-blue-600 to-blue-700 rounded-xl flex items-center justify-center mb-3"><i data-feather="calendar" class="text-white w-7 h-7"></i></div>
+      <h1 class="text-xl font-bold">Montar Escala</h1><p class="text-sm text-slate-500">Mercearia Amauri · acesso do líder</p></div>
+    <div class="card p-6">${S.erro?`<div class="mb-4 p-3 rounded text-sm bg-red-50 text-red-700 border border-red-200">${S.erro}</div>`:''}
+      <label class="text-xs font-medium text-slate-500 block mb-1">E-mail</label>
+      <input id="login_email" type="email" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-3" placeholder="voce@gruporpe.com.br">
+      <label class="text-xs font-medium text-slate-500 block mb-1">Senha</label>
+      <input id="login_senha" type="password" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-4" placeholder="••••••••" onkeydown="if(event.key==='Enter')entrar()">
+      <button onclick="entrar()" class="w-full px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">Entrar</button>
+    </div><p class="text-center text-xs text-slate-400 mt-4">Grupo RPE</p></div></div>`;
+}
+
+function celHTML(nome,data){
+  const c=cel(nome,data); let inner='<span class="text-slate-300">—</span>'; let bg='';
+  if(c){ if(c.status==='folga'){inner='<span class="text-[9px] font-semibold text-slate-400">FOLGA</span>';bg='bg-slate-50';}
+    else if(c.status==='ferias'){inner='<span class="text-[9px] font-semibold text-indigo-500">FÉRIAS</span>';bg='bg-indigo-50';}
+    else if(c.status==='atestado'){inner='<span class="text-[9px] font-semibold text-amber-600">ATEST.</span>';bg='bg-amber-50';}
+    else { const col=c.periodo==='almoco'?'text-sky-700':c.periodo==='jantar'?'text-purple-700':'text-emerald-700'; inner=`<span class="text-[10px] font-semibold ${col} block leading-tight">${(c.entrada||'').slice(0,5)}<br>${(c.saida||'').slice(0,5)}</span>`; bg=c.periodo==='almoco'?'bg-sky-50':c.periodo==='jantar'?'bg-purple-50':'bg-emerald-50'; } }
+  return `<td class="border border-slate-100 p-0 text-center"><button onclick="abrirEditor('${nome.replace(/'/g,"\\'")}','${data}')" class="w-full h-11 ${bg} hover:ring-2 hover:ring-blue-300 flex items-center justify-center">${inner}</button></td>`;
+}
+
+function viewApp(){
+  const ds=dias();
+  const setorSel=`<select onchange="setSetor(this.value)" class="px-2 py-1.5 border border-slate-200 rounded text-sm">${S.setores.map(s=>`<option value="${s.id}" ${s.id===S.selSetor?'selected':''}>${s.nome}</option>`).join('')}</select>`;
+  const head=`<tr><th class="px-2 py-2 text-left text-xs text-slate-400 sticky left-0 bg-white">Funcionário</th>${ds.map(d=>{const dt=new Date(d+'T00:00:00');return `<th class="px-1 py-2 text-center text-[11px] ${[0,6].includes(dt.getDay())?'text-blue-500':'text-slate-500'}">${DOWF[dt.getDay()]}<br><span class="font-semibold">${d.slice(8,10)}/${d.slice(5,7)}</span></th>`;}).join('')}<th></th></tr>`;
+  const ps=pessoas();
+  const linhas=ps.map(p=>`<tr><td class="px-2 py-1 text-xs font-medium text-slate-700 whitespace-nowrap sticky left-0 bg-white">${p.nome}<br><span class="text-[9px] text-slate-400">${p.cargo||'livre'}</span></td>${ds.map(d=>celHTML(p.nome,d)).join('')}<td class="px-1 text-center"><button onclick="removerPessoa('${p.nome.replace(/'/g,"\\'")}')" class="text-slate-300 hover:text-red-500" title="remover da semana"><i data-feather="x" class="w-3.5 h-3.5"></i></button></td></tr>`).join('');
+  const foot=['almoco','jantar'].map(per=>`<tr class="bg-slate-50"><td class="px-2 py-1 text-[10px] font-semibold text-slate-500 sticky left-0 bg-slate-50">${PERLBL[per]}</td>${ds.map(d=>{const n=contaDia(d,per);return `<td class="text-center text-xs font-bold ${n?'text-slate-700':'text-slate-300'}">${n||'0'}</td>`;}).join('')}<td></td></tr>`).join('');
+
+  const editavel=S.envio?.status!=='aprovada';
+  const grid=`<div class="card p-3 overflow-x-auto"><table class="w-full border-collapse"><thead>${head}</thead><tbody>${linhas||`<tr><td colspan="9" class="text-center text-slate-400 py-6">Nenhuma pessoa nesta semana. Use "Adicionar pessoa" ou "Importar escala atual".</td></tr>`}</tbody><tfoot>${foot}</tfoot></table>
+    <p class="text-[11px] text-slate-400 mt-2">Clique numa célula para definir turno (entrada/saída/período), folga, férias ou atestado. Rodapé = nº de pessoas por período/dia.</p></div>`;
+
+  const addBox=S.addOpen?`<div class="card p-3 mb-3 flex flex-wrap items-end gap-2 animate-fade">
+      <div><label class="text-[10px] text-slate-500 block">Funcionário do setor</label><select id="ap_func" class="px-2 py-1.5 border border-slate-200 rounded text-sm"><option value="">—</option>${S.funcionarios.filter(f=>f.cargos&&f.cargos.setor_id===S.selSetor).map(f=>`<option value="${f.id}">${f.nome}</option>`).join('')}</select></div>
+      <span class="text-xs text-slate-400">ou</span>
+      <div><label class="text-[10px] text-slate-500 block">Nome livre</label><input id="ap_nome" placeholder="Nome" class="px-2 py-1.5 border border-slate-200 rounded text-sm"></div>
+      <button onclick="addPessoa()" class="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">Adicionar à semana</button>
+      <button onclick="toggleAdd()" class="px-3 py-1.5 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Cancelar</button>
+    </div>`:'';
+
+  const mon=S.semana, dom=addDias(mon,6);
+  return `<div class="max-w-6xl mx-auto p-4 md:p-8 animate-fade">
+    <div class="flex items-center justify-between mb-5"><div><h1 class="text-2xl font-bold">Montar Escala</h1><p class="text-sm text-slate-500">Olá, ${S.perfil?.nome||S.session.user.email}</p></div>
+      <button onclick="sair()" class="text-slate-500 hover:text-red-600 flex items-center gap-1 text-sm"><i data-feather="log-out" class="w-4 h-4"></i>Sair</button></div>
+    ${S.ok?`<div class="mb-4 p-3 rounded text-sm bg-emerald-50 text-emerald-700 border border-emerald-200">${S.ok}</div>`:''}
+    ${podeMontar()?`
+      <div class="card p-4 mb-4 flex flex-wrap items-center gap-3">
+        <span class="text-sm font-semibold text-slate-700 flex items-center gap-2"><i data-feather="users" class="w-4 h-4 text-blue-600"></i>Setor</span>${setorSel}
+        <span class="text-slate-300 hidden md:inline">|</span>
+        <div class="flex items-center gap-1"><button onclick="navSemana(-1)" class="p-1.5 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-left" class="w-4 h-4"></i></button>
+          <span class="text-sm font-medium text-slate-600 px-1 whitespace-nowrap">${mon.slice(8,10)}/${mon.slice(5,7)} – ${dom.slice(8,10)}/${dom.slice(5,7)}</span>
+          <button onclick="navSemana(1)" class="p-1.5 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-right" class="w-4 h-4"></i></button></div>
+        <span class="ml-auto">${statusBadge()}</span>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 mb-3">
+        ${editavel?`<button onclick="toggleAdd()" class="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-1"><i data-feather="user-plus" class="w-4 h-4"></i>Adicionar pessoa</button>
+        <button onclick="importarAtual()" class="px-3 py-2 border border-slate-200 rounded text-sm hover:bg-slate-100 flex items-center gap-1" title="copiar a escala já publicada desta semana como base"><i data-feather="download" class="w-4 h-4"></i>Importar escala atual</button>`:'<span class="text-sm text-emerald-600 flex items-center gap-1"><i data-feather="lock" class="w-4 h-4"></i>Semana aprovada (somente leitura).</span>'}
+        <button onclick="enviar(this)" class="ml-auto px-4 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-700 flex items-center gap-2 ${S.rascunho.length?'':'opacity-50 pointer-events-none'}"><i data-feather="send" class="w-4 h-4"></i>Enviar para aprovação</button>
+      </div>
+      ${addBox}
+      ${grid}
+      <p class="text-[11px] text-slate-400 mt-3">A escala montada aqui fica em <strong>rascunho</strong> e <strong>não afeta o sistema</strong> até o Gerente Geral aceitar. Após o aceite, ela passa a valer (headcount e recomendações de extras).</p>
+    `:'<div class="card p-6 text-center text-slate-500">Seu usuário não tem permissão para montar escala. Fale com o RH.</div>'}
+  </div>`;
+}
+
+function editorHTML(){
+  if(!S.edit) return ''; const e=S.edit, trab=e.status==='trabalha';
+  const so=(v)=>`<option value="${v}" ${e.status===v?'selected':''}>${STLBL[v]}</option>`;
+  const po=(v)=>`<option value="${v}" ${e.periodo===v?'selected':''}>${PERLBL[v]}</option>`;
+  const dt=new Date(e.data+'T00:00:00');
+  return `<div class="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)fecharEditor()">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-sm p-5">
+      <div class="flex items-center justify-between mb-3"><h3 class="font-bold text-slate-900">${e.nome.split(' ').slice(0,2).join(' ')} · ${DOWF[dt.getDay()]} ${e.data.slice(8,10)}/${e.data.slice(5,7)}</h3><button onclick="fecharEditor()" class="text-slate-400 hover:text-slate-700"><i data-feather="x" class="w-5 h-5"></i></button></div>
+      <label class="text-xs text-slate-500 block mb-1">Situação</label>
+      <select onchange="edSet('status',this.value)" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-3">${['trabalha','folga','ferias','atestado'].map(so).join('')}</select>
+      ${trab?`<div class="grid grid-cols-2 gap-2 mb-3"><div><label class="text-xs text-slate-500 block mb-1">Entrada</label><input id="ed_ent" type="time" value="${e.entrada}" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div><div><label class="text-xs text-slate-500 block mb-1">Saída</label><input id="ed_sai" type="time" value="${e.saida}" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div></div>
+      <label class="text-xs text-slate-500 block mb-1">Período</label><select id="ed_per" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-3">${['almoco','jantar','ambos'].map(po).join('')}</select>`:''}
+      <div class="flex justify-between gap-2"><button onclick="limparCel()" class="px-3 py-2 text-red-500 text-sm hover:underline">Limpar</button>
+        <div class="flex gap-2"><button onclick="fecharEditor()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Cancelar</button><button onclick="salvarCel()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">Salvar</button></div></div>
+    </div></div>`;
+}
+
+function paint(){ const h=document.getElementById('modalHost'); if(h){ h.innerHTML=editorHTML(); feather.replace(); } }
+function render(){ const root=document.getElementById('root'); if(S.loading){ root.innerHTML='<div class="min-h-screen flex items-center justify-center text-slate-400">Carregando…</div>'; return; } root.innerHTML=S.session?viewApp():viewLogin(); document.getElementById('modalHost').innerHTML=editorHTML(); feather.replace(); }
+boot();
+</script>
+</body>
+</html>
