@@ -898,7 +898,7 @@ let extrasMes={ano:new Date().getFullYear(), mes:new Date().getMonth()+1};
 const PERIODO_LBL={almoco:'Almoço',jantar:'Jantar',ambos:'Almoço e Jantar'};
 function valorPorPeriodo(tipo){ return tipo==='dobra'?Number(S.config?.valor_dobra||0):Number(S.config?.valor_extra_diaria||0); }
 function periodosUnit(s){ return s.periodo==='ambos'?2:1; }
-function custoUnit(s){ return periodosUnit(s)*valorPorPeriodo(s.tipo); }
+function custoUnit(s){ return (s.valor!=null&&s.valor!=='')?Number(s.valor):periodosUnit(s)*valorPorPeriodo(s.tipo); }
 function pessoaUnit(s){ return s.tipo_pessoa==='funcionario'?(s.funcionarios?.nome||'Funcionário'):s.tipo_pessoa==='freelancer'?(s.nome_freelancer||'Freelancer'):'— a definir —'; }
 function extraFuncPeriodo(fid,p){ let v=0; (S.solicitacoes||[]).forEach(s=>{ if(s.provisionado && s.tipo_pessoa==='funcionario' && s.funcionario_id===fid && s.data>=p.data_inicio && s.data<=p.data_fim) v+=custoUnit(s); }); return v; }
 
