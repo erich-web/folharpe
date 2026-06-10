@@ -1105,11 +1105,50 @@ window._viewRelatorios = function(){
         <td class="px-4 py-3 text-center">${h.colaboradores||'—'}</td>
         <td class="px-4 py-3 text-right">${money(h.total_comissao)}</td><td class="px-4 py-3 text-right font-semibold">${money(h.total_folha)}</td>
         <td class="px-4 py-3 text-center">${h.status==='Pago'?'<span class="badge bg-green-100 text-green-700">Pago</span>':(podeEscrever('relatorios')?`<button onclick="marcarPago(${h.id})" class="badge bg-amber-100 text-amber-700 hover:bg-amber-200">Marcar pago</button>`:'<span class="badge bg-amber-100 text-amber-700">Previsto</span>')}</td>
-        <td class="px-4 py-3 text-center"><button onclick="go('comissao')" class="text-blue-600 hover:underline text-xs">Abrir</button></td>
+        <td class="px-4 py-3 text-center"><div class="flex items-center justify-center gap-3">
+          <button onclick="abrirRelatorioPeriodo(${h.periodo_id})" class="text-blue-600 hover:underline text-xs" title="abrir o período na Comissão">Abrir</button>
+          <button onclick="gerarRelatorioPDF(${h.id})" class="text-purple-600 hover:underline text-xs inline-flex items-center gap-1" title="baixar o relatório do período em PDF"><i data-feather="download" class="w-3 h-3"></i>PDF</button>
+        </div></td>
       </tr>`).join('')||'<tr><td colspan="8" class="text-center text-slate-400 py-8">Nenhum fechamento salvo ainda. Salve um na Comissão Quinzenal.</td></tr>'}
       </tbody></table></div>`);
 };
 window.marcarPago = async function(id){ await sb.from('pagamentos').update({status:'Pago',fechado_em:new Date().toISOString()}).eq('id',id); await carregarDados(); render(); };
+window.abrirRelatorioPeriodo = async function(periodoId){ if(!periodoId){ alert('Este pagamento não tem período vinculado.'); return; } const p=S.periodos.find(x=>x.id===+periodoId); if(!p){ alert('Período não encontrado.'); return; } await selectPeriodo(periodoId); go('comissao'); };
+window.gerarRelatorioPDF = async function(pagId){
+  if(!window.jspdf){ alert('Biblioteca de PDF não carregou. Recarregue a página.'); return; }
+  const h=S.pagamentos.find(x=>x.id===pagId); if(!h){ alert('Pagamento não encontrado.'); return; }
+  const { data, error }=await sb.from('comissao_resultado').select('*, funcionarios(nome)').eq('periodo_id',h.periodo_id);
+  if(error){ alert('Erro ao carregar o relatório: '+error.message); return; }
+  const rows=(data||[]).slice().sort((a,b)=>(a.setor||'').localeCompare(b.setor||'')||((Number(b.total)||0)-(Number(a.total)||0)));
+  if(!rows.length){ alert('Este pagamento não tem detalhamento por colaborador salvo (fechamento antigo). Reabra o período na Comissão e salve de novo para gerar o PDF detalhado.'); return; }
+  const nomeDe=r=>(r.funcionarios&&r.funcionarios.nome)||((S.funcionarios.find(f=>f.id===r.funcionario_id)||{}).nome)||('#'+r.funcionario_id);
+  const { jsPDF }=window.jspdf; const doc=new jsPDF({unit:'mm',format:'a4',orientation:'landscape'});
+  const fmt=v=>(Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const L=12, R=285; let y=14;
+  doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.text(EMPRESA.nome,L,y);
+  doc.setFontSize(11); doc.text('RELATÓRIO DE FECHAMENTO',R,y,{align:'right'}); y+=5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8);
+  doc.text(`Ciclo: ${h.ciclo||'—'}    Apuração: ${h.apuracao||'—'}`,L,y);
+  doc.text(`Pagamento: ${h.data_pagamento?h.data_pagamento.split('-').reverse().join('/'):'—'}    Status: ${h.status||'—'}`,R,y,{align:'right'}); y+=4;
+  doc.text(`Colaboradores: ${rows.length}    Comissões: R$ ${fmt(h.total_comissao)}    Folha total: R$ ${fmt(h.total_folha)}`,L,y); y+=4;
+  doc.setDrawColor(150); doc.line(L,y,R,y); y+=4.5;
+  const cols=[ {x:L,label:'Funcionário',get:r=>nomeDe(r),align:'left',w:54},{x:68,label:'Setor',get:r=>r.setor||'—',align:'left',w:38},
+    {x:112,label:'Pts fin.',get:r=>fmt(r.pontos_finais),align:'right'},{x:136,label:'Comissão',get:r=>fmt(r.comissao),align:'right'},
+    {x:159,label:'Repique',get:r=>fmt(r.repique),align:'right'},{x:183,label:'Salário',get:r=>fmt(r.salario),align:'right'},
+    {x:205,label:'HE',get:r=>fmt(r.he_pagar_valor),align:'right'},{x:230,label:'Ad.Not',get:r=>fmt(r.adic_noturno_valor),align:'right'},{x:R,label:'Total',get:r=>fmt(r.total),align:'right'} ];
+  function cabecalho(){ doc.setFont('helvetica','bold'); doc.setFontSize(7.5); cols.forEach(c=>doc.text(c.label,c.x,y,c.align==='right'?{align:'right'}:undefined)); y+=1.6; doc.line(L,y,R,y); y+=3.6; doc.setFont('helvetica','normal'); doc.setFontSize(7.5); }
+  cabecalho();
+  rows.forEach(r=>{ if(y>196){ doc.addPage(); y=14; cabecalho(); }
+    cols.forEach(c=>{ let t=String(c.get(r)); if(c.align==='left'&&c.w){ while(doc.getTextWidth(t)>c.w && t.length>3){ t=t.slice(0,-2); } } doc.text(t,c.x,y,c.align==='right'?{align:'right'}:undefined); });
+    y+=4.2; });
+  y+=1; doc.setDrawColor(150); doc.line(L,y,R,y); y+=4.2; doc.setFont('helvetica','bold'); doc.setFontSize(8);
+  const sum=k=>rows.reduce((a,r)=>a+(Number(r[k])||0),0);
+  doc.text('TOTAIS',L,y);
+  doc.text(fmt(sum('comissao')),136,y,{align:'right'}); doc.text(fmt(sum('repique')),159,y,{align:'right'});
+  doc.text(fmt(sum('salario')),183,y,{align:'right'}); doc.text(fmt(sum('he_pagar_valor')),205,y,{align:'right'});
+  doc.text(fmt(sum('adic_noturno_valor')),230,y,{align:'right'}); doc.text(fmt(sum('total')),R,y,{align:'right'});
+  doc.save('relatorio-'+String(h.ciclo||'').toLowerCase().replace(/\s+/g,'-')+'-'+(h.data_pagamento||'')+'.pdf');
+};
 </script>
 <script>
 /* ===================== IMPORTAÇÃO CARTÃO SECULLUM (PDF via pdf.js) ===================== */
