@@ -115,7 +115,7 @@ async function carregarDados(){
       sb.from('config_remuneracao').select('*').eq('restaurante_id',rid).single(),
       sb.from('setores').select('*').eq('restaurante_id',rid).order('ordem'),
       sb.from('cargos').select('*, setores(nome)').eq('restaurante_id',rid).order('pontos',{ascending:false}),
-      sb.from('funcionarios').select('*, cargos(nome,pontos,setor_id,setores(nome))').eq('restaurante_id',rid).order('nome'),
+      sb.from('funcionarios').select('*, cargos(nome,pontos,setor_id,grupo_rateio,setores(nome))').eq('restaurante_id',rid).order('nome'),
       sb.from('config_rateio').select('*, setores(nome)').eq('restaurante_id',rid),
       sb.from('ranking_premio').select('*').eq('restaurante_id',rid).order('colocacao'),
       sb.from('ciclos_pagamento').select('*').eq('restaurante_id',rid).order('ordem'),
@@ -473,9 +473,6 @@ carregarSessao();
 /* ===================== CONFIGURAÇÕES (gravam no banco) ===================== */
 window._viewConfig = function(){
   const cfg = S.config || {};
-  const somaRateio = S.rateio.reduce((a,r)=>a+Number(r.percentual||0),0);
-  const rateioSetor = s => { const r=S.rateio.find(x=>x.tipo==='setor'&&x.setores?.nome===s.nome); return r; };
-  const rankingRow = S.rateio.find(x=>x.tipo==='ranking');
   const f=(lb,inner)=>`<div class="flex items-center justify-between mb-3"><span class="text-sm text-slate-600">${lb}</span>${inner}</div>`;
   const numInput=(id,v,suf='')=>`<div class="flex items-center gap-1"><input id="${id}" type="number" step="0.01" value="${v??0}" class="w-24 px-2 py-1 border border-slate-200 rounded text-sm text-right">${suf?`<span class="text-slate-400 text-sm">${suf}</span>`:''}</div>`;
   return pageHeader('Configurações','Regras, rateio, ranking e ciclos — gravam direto no banco')
@@ -497,15 +494,28 @@ window._viewConfig = function(){
       ${f('Adicional noturno', numInput('cf_adicnot', cfg.adicional_noturno_pct??50,'%'))}
       ${f('Adiantamento (% do salário)', numInput('cf_adiantpct', cfg.adiantamento_pct??40,'%'))}
     </div>`)
-  + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="pie-chart" class="w-4 h-4 text-blue-600"></i>Rateio por setor</h3>
-      ${S.setores.map(s=>{const r=rateioSetor(s); return f(s.nome, numInput('cr_'+s.id, r?.percentual||0,'%'));}).join('')}
-      ${f('Ranking', numInput('cr_ranking', rankingRow?.percentual||0,'%'))}
-      <div class="mt-2 pt-2 border-t flex justify-between text-sm font-semibold ${Math.round(somaRateio)===100?'text-green-600':'text-red-600'}"><span>Soma</span><span>${num(somaRateio,0)}%</span></div>
-    </div>`)
+  + (()=>{ const ps=Number(cfg.rateio_salao_pct??53),pr=Number(cfg.rateio_restante_pct??42),pk=Number(cfg.rateio_ranking_pct??5); const soma=ps+pr+pk;
+     return card(`<div class="p-6"><h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="pie-chart" class="w-4 h-4 text-blue-600"></i>Rateio da taxa de serviço</h3>
+      <p class="text-[11px] text-slate-400 mb-3">% da <strong>distribuída</strong> (depois da retenção e dos extras) para cada grupo.</p>
+      ${f('Salão', numInput('cf_ratsalao', ps,'%'))}
+      ${f('Restante', numInput('cf_ratrestante', pr,'%'))}
+      ${f('Ranking', numInput('cf_ratranking', pk,'%'))}
+      <div class="mt-2 pt-2 border-t flex justify-between text-sm font-semibold ${Math.round(soma)===100?'text-green-600':'text-red-600'}"><span>Soma</span><span>${num(soma,0)}%</span></div>
+    </div>`); })()
   + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="award" class="w-4 h-4 text-amber-600"></i>Ranking — % por colocação</h3>
       ${S.ranking.map(r=>f(r.colocacao+'º lugar', numInput('rk_'+r.id, r.percentual,'%'))).join('')||'<p class="text-sm text-slate-400">Sem colocações.</p>'}
     </div>`)
   + `</div>`
+  + `<div class="mt-4">${card(`<div class="p-6"><h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="users" class="w-4 h-4 text-blue-600"></i>Grupos de rateio — cargos</h3>
+      <p class="text-[11px] text-slate-400 mb-3">Defina quais cargos entram no <strong>Salão</strong>; os demais formam o <strong>Restante</strong>. Vale para o cálculo da comissão.</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+      ${S.cargos.slice().sort((a,b)=>a.nome.localeCompare(b.nome)).map(c=>`<div class="flex items-center justify-between gap-2 p-2 border border-slate-100 rounded">
+          <span class="text-sm text-slate-700">${c.nome}</span>
+          <select onchange="setCargoGrupo(${c.id},this.value)" class="px-2 py-1 border ${c.grupo_rateio==='salao'?'border-blue-300 bg-blue-50':'border-slate-200'} rounded text-xs">
+            <option value="salao" ${c.grupo_rateio==='salao'?'selected':''}>Salão</option>
+            <option value="restante" ${c.grupo_rateio!=='salao'?'selected':''}>Restante</option>
+          </select></div>`).join('')}
+      </div></div>`)}</div>`
   + `<div class="mt-4">${card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="repeat" class="w-4 h-4 text-blue-600"></i>Ciclos de pagamento</h3>
       <div class="space-y-2">${S.ciclos.map(c=>`<div class="p-3 border border-slate-200 rounded text-sm flex items-center justify-between">
         <div><strong>${c.nome}</strong> · apuração dia ${c.apur_ini_dia} (${c.apur_ini_off<0?'mês ant.':'mês corr.'}) ao ${c.apur_fim_dia} (${c.apur_fim_off<0?'mês ant.':'mês corr.'})</div>
@@ -522,20 +532,19 @@ window.salvarConfig = async function(){
   const upd={ desconto_falta_pct:v('cf_falta'), desconto_atraso_pct:v('cf_atraso'), desconto_advertencia_pct:v('cf_adv'),
     valor_dobra:v('cf_dobra'), valor_extra_diaria:v('cf_extra'), retencao_casa_pct:v('cf_retencao'),
     holerite_dentro_pct:dentro, holerite_fora_pct:100-dentro, desc_extras_pct:v('cf_descextras'), limite_he_dia_horas:v('cf_he'),
-    horas_mes_base:v('cf_horasmes')||220, adicional_he_pct:v('cf_adiche'), adicional_noturno_pct:v('cf_adicnot')||50, adiantamento_pct:v('cf_adiantpct')||40, updated_at:new Date().toISOString() };
+    horas_mes_base:v('cf_horasmes')||220, adicional_he_pct:v('cf_adiche'), adicional_noturno_pct:v('cf_adicnot')||50, adiantamento_pct:v('cf_adiantpct')||40,
+    rateio_salao_pct:v('cf_ratsalao'), rateio_restante_pct:v('cf_ratrestante'), rateio_ranking_pct:v('cf_ratranking'), updated_at:new Date().toISOString() };
   let e1=(await sb.from('config_remuneracao').update(upd).eq('id',S.config.id)).error;
-  // rateio por setor
-  for(const s of S.setores){ const r=S.rateio.find(x=>x.tipo==='setor'&&x.setor_id===s.id); const pct=v('cr_'+s.id);
-    if(r) await sb.from('config_rateio').update({percentual:pct}).eq('id',r.id);
-    else await sb.from('config_rateio').insert({restaurante_id:S.restaurante.id,tipo:'setor',setor_id:s.id,percentual:pct}); }
-  const rk=S.rateio.find(x=>x.tipo==='ranking'); const rkv=v('cr_ranking');
-  if(rk) await sb.from('config_rateio').update({percentual:rkv}).eq('id',rk.id);
-  else await sb.from('config_rateio').insert({restaurante_id:S.restaurante.id,tipo:'ranking',percentual:rkv});
   // ranking premio
   for(const r of S.ranking){ await sb.from('ranking_premio').update({percentual:v('rk_'+r.id)}).eq('id',r.id); }
   if(e1){ alert('Erro ao salvar config: '+e1.message); return; }
   await carregarDados(); render();
   alert('Configurações salvas.');
+};
+window.setCargoGrupo = async function(id, g){
+  const { error }=await sb.from('cargos').update({grupo_rateio:g}).eq('id',+id);
+  if(error){ alert('Erro: '+error.message); return; }
+  await carregarDados(); render();
 };
 </script>
 <script>
@@ -555,32 +564,35 @@ function calcComissao(){
   const extrasTotal=solProv.reduce((a,s)=>a+custoUnit(s),0);
   const extrasDesc=extrasTotal*Number(cfg.desc_extras_pct)/100;
   const distribuida=taxaTotal-retencao-extrasDesc;
-  const ratePct={}; S.setores.forEach(s=>{const r=S.rateio.find(x=>x.tipo==='setor'&&x.setor_id===s.id);ratePct[s.nome]=Number(r?.percentual||0);});
-  const rankingPct=Number((S.rateio.find(x=>x.tipo==='ranking')||{}).percentual||0);
+  // Rateio por GRUPO: Salão e Restante (+ Ranking). % sobre a distribuída (após retenção e extras).
+  const GRUPOS=['Salão','Restante'];
+  const ratePct={ 'Salão':Number(cfg.rateio_salao_pct??53), 'Restante':Number(cfg.rateio_restante_pct??42) };
+  const rankingPct=Number(cfg.rateio_ranking_pct??5);
   const rankBucket=distribuida*rankingPct/100;
   const bonusByFunc={}; S.rankingPeriodo.forEach(rp=>{ const prem=S.ranking.find(x=>x.colocacao===rp.colocacao); if(prem) bonusByFunc[rp.funcionario_id]=rankBucket*Number(prem.percentual)/100; });
 
   const rows=S.funcionarios.map(f=>{
     const cg=f.cargos||{}; const base=Number(cg.pontos||0); const setor=cg.setores?.nome||'Outros';
+    const grupo=(cg.grupo_rateio==='salao')?'Salão':'Restante';
     const c=agregaPonto(f.id); const falta=c.Falta,atraso=c.Atraso,adv=c['Advertência'],inativo=c.Inativo||0;
     const diasTrab=Math.max(0,dias-falta-inativo);   // dias inativos não contam p/ comissão (proporcional)
     const Z=(diasTrab/dias)*base;
     let desc=Z*(falta*Number(cfg.desconto_falta_pct)/100 + atraso*Number(cfg.desconto_atraso_pct)/100 + adv*Number(cfg.desconto_advertencia_pct)/100);
     desc=Math.min(desc,Z);
     let finais=Z-desc; if(finais>0&&finais<0.1)finais=0.1; if(diasTrab===0)finais=0;
-    return {f,setor,base,falta,atraso,adv,Z,desc,finais,recebeRepique:desc<=0, heMin:bancoFunc(f.id).pagar};
+    return {f,setor,grupo,base,falta,atraso,adv,Z,desc,finais,recebeRepique:desc<=0, heMin:bancoFunc(f.id).pagar};
   });
-  const somaZ={},somaDesc={},somaFinQ={}; S.setores.forEach(s=>{somaZ[s.nome]=0;somaDesc[s.nome]=0;somaFinQ[s.nome]=0;});
-  rows.forEach(r=>{somaZ[r.setor]+=r.Z;somaDesc[r.setor]+=r.desc;if(r.recebeRepique)somaFinQ[r.setor]+=r.finais;});
+  const somaZ={'Salão':0,'Restante':0},somaDesc={'Salão':0,'Restante':0},somaFinQ={'Salão':0,'Restante':0};
+  rows.forEach(r=>{somaZ[r.grupo]+=r.Z;somaDesc[r.grupo]+=r.desc;if(r.recebeRepique)somaFinQ[r.grupo]+=r.finais;});
   const rsPonto={},pool={},rsRep={};
-  S.setores.forEach(s=>{const b=distribuida*(ratePct[s.nome]||0)/100; rsPonto[s.nome]=somaZ[s.nome]>0?b/somaZ[s.nome]:0; pool[s.nome]=somaDesc[s.nome]*rsPonto[s.nome]; rsRep[s.nome]=somaFinQ[s.nome]>0?pool[s.nome]/somaFinQ[s.nome]:0;});
+  GRUPOS.forEach(g=>{const b=distribuida*(ratePct[g]||0)/100; rsPonto[g]=somaZ[g]>0?b/somaZ[g]:0; pool[g]=somaDesc[g]*rsPonto[g]; rsRep[g]=somaFinQ[g]>0?pool[g]/somaFinQ[g]:0;});
   const tipo=p.tipo_pagamento||'oficial';
   const adiantPct=Number(cfg.adiantamento_pct)||40;
   const dentroPct=Number(cfg.holerite_dentro_pct)/100, foraPct=Number(cfg.holerite_fora_pct)/100;
   const horasMes=Number(cfg.horas_mes_base)||220;
   rows.forEach(r=>{
-    r.comissao=r.finais*rsPonto[r.setor];
-    r.repique=r.recebeRepique?r.finais*rsRep[r.setor]:0;
+    r.comissao=r.finais*rsPonto[r.grupo];
+    r.repique=r.recebeRepique?r.finais*rsRep[r.grupo]:0;
     r.ranking=bonusByFunc[r.f.id]||0;
     r.comTotal=r.comissao+r.repique+r.ranking;                 // comissão DO PERÍODO
     const valorHora=horasMes>0?Number(r.f.salario)/horasMes:0;
