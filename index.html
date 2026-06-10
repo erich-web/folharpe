@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/feather-icons/4.29.0/feather.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   *{scroll-behavior:smooth}
@@ -371,8 +372,8 @@ function viewStub(titulo){
 
 /* ===================== MODAL CADASTRO ===================== */
 function abrirCadastro(id){
-  if(id==null){ modalCad={id:null, nome:'', cargo_id:S.cargos[0]?.id, status:'Normal', regime:'CLT', salario:2499.50, minimo_garantido:0, adiantamento:true, beneficios:0, data_admissao:'', data_nascimento:''}; }
-  else { const f=S.funcionarios.find(x=>x.id===id); modalCad={id:f.id, nome:f.nome, cargo_id:f.cargo_id, status:f.status, regime:f.regime, salario:f.salario, minimo_garantido:f.minimo_garantido, adiantamento:f.adiantamento, beneficios:f.beneficios, data_admissao:f.data_admissao||'', data_nascimento:f.data_nascimento||''}; }
+  if(id==null){ modalCad={id:null, nome:'', cargo_id:S.cargos[0]?.id, status:'Normal', regime:'CLT', salario:2499.50, minimo_garantido:0, adiantamento:true, beneficios:0, data_admissao:'', data_nascimento:'', codigo_contabil:'', vale_transporte:true}; }
+  else { const f=S.funcionarios.find(x=>x.id===id); modalCad={id:f.id, nome:f.nome, cargo_id:f.cargo_id, status:f.status, regime:f.regime, salario:f.salario, minimo_garantido:f.minimo_garantido, adiantamento:f.adiantamento, beneficios:f.beneficios, data_admissao:f.data_admissao||'', data_nascimento:f.data_nascimento||'', codigo_contabil:f.codigo_contabil||'', vale_transporte:f.vale_transporte!==false}; }
   render();
 }
 function fecharModal(){ modalCad=null; render(); }
@@ -380,6 +381,7 @@ async function salvarCadastro(){
   const d={ nome:val('cad_nome').trim(), cargo_id:+val('cad_cargo'), status:val('cad_status'), regime:val('cad_regime'),
     salario:+val('cad_salario')||0, minimo_garantido:+val('cad_minimo')||0, adiantamento:val('cad_adiantamento')==='sim', beneficios:+val('cad_beneficios')||0,
     data_admissao:val('cad_admissao')||null, data_nascimento:val('cad_nascimento')||null,
+    codigo_contabil:val('cad_codcont').trim()||null, vale_transporte:val('cad_vt')==='sim',
     restaurante_id:S.restaurante.id };
   if(!d.nome){ alert('Informe o nome.'); return; }
   let err;
@@ -410,6 +412,8 @@ function modalHTML(){
         ${field('Adiantamento', `<select id="cad_adiantamento" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${opt([{value:'sim',label:'sim'},{value:'nao',label:'não'}], m.adiantamento?'sim':'nao')}</select>`)}
         ${field('Data de admissão', `<input id="cad_admissao" type="date" value="${m.data_admissao||''}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
         ${field('Data de nascimento', `<input id="cad_nascimento" type="date" value="${m.data_nascimento||''}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
+        ${field('Código contábil (matrícula p/ e-Social)', `<input id="cad_codcont" value="${(m.codigo_contabil||'').replace(/"/g,'&quot;')}" placeholder="ex.: 000004" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
+        ${field('Vale transporte', `<select id="cad_vt" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${opt([{value:'sim',label:'SIM'},{value:'nao',label:'NÃO'}], m.vale_transporte?'sim':'nao')}</select>`)}
         ${field('Salário (R$)', `<input id="cad_salario" type="number" step="0.01" value="${m.salario}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
         ${field('Mínimo garantido (R$)', `<input id="cad_minimo" type="number" step="0.01" value="${m.minimo_garantido}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
         ${field('Benefícios (R$)', `<input id="cad_beneficios" type="number" step="0.01" value="${m.beneficios}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
@@ -1480,9 +1484,12 @@ window._viewHolerite = function(){
   if(!S.periodoAtual) return header + aviso + seletorPeriodo() + card(`<div class="p-12 text-center text-slate-400"><i data-feather="file-text" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Selecione um período (na aba Comissão ou aqui) para gerar os recibos.</p></div>`);
   const H=holeriteLinhas(); const rows=H.rows; const tot=k=>rows.reduce((a,x)=>a+(x[k]||0),0);
   return header + aviso + seletorPeriodo()
-  + `<div class="flex items-center justify-between mb-3">
+  + `<div class="flex items-center justify-between mb-3 flex-wrap gap-2">
        <span class="badge ${TIPO_BADGE[H.tipo]||''}">${TIPO_RECIBO[H.tipo]||'—'}</span>
-       <button onclick="gerarHoleritePDF(null)" class="px-4 py-2 bg-purple-600 text-white rounded text-sm font-medium hover:bg-purple-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>Baixar todos (PDF)</button>
+       <div class="flex items-center gap-2">
+         <button onclick="abrirEsocial()" class="px-4 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-700 flex items-center gap-2" title="Gera a planilha mensal de lançamentos para o contador"><i data-feather="file-text" class="w-4 h-4"></i>Planilha e-Social (contador)</button>
+         <button onclick="gerarHoleritePDF(null)" class="px-4 py-2 bg-purple-600 text-white rounded text-sm font-medium hover:bg-purple-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>Baixar todos (PDF)</button>
+       </div>
      </div>`
   + card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr>
       <th class="px-3 py-3 text-left">Funcionário</th>
@@ -1502,8 +1509,78 @@ window._viewHolerite = function(){
       </tr>`).join('')}
       <tr class="bg-slate-50 font-bold text-slate-800"><td class="px-3 py-2">TOTAL</td><td class="px-2 py-2 text-right">${money(tot('totProv'))}</td><td class="px-2 py-2 text-right bg-slate-100">${money(tot('base'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('inss'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('irrf'))}</td><td class="px-2 py-2 text-right text-red-600">−${money(tot('outros'))}</td><td class="px-3 py-2 text-right text-green-700 bg-green-100">${money(tot('liquido'))}</td><td class="px-2 py-2 text-right bg-indigo-100 text-indigo-700">${money(tot('comFora'))}</td><td></td></tr>
       </tbody></table></div>
-      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">"Outros desc." = adiantamentos (salário 40% + comissão) deduzidos no oficial. Clique em <strong>PDF</strong> para o recibo individual ou "Baixar todos".</div>`);
+      <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">"Outros desc." = adiantamentos (salário 40% + comissão) deduzidos no oficial. Clique em <strong>PDF</strong> para o recibo individual ou "Baixar todos".</div>`)
+  + esocialModalHTML();
 };
+
+/* ===================== PLANILHA e-SOCIAL (contador) ===================== */
+let esocialModal=null;
+const ESOCIAL_EMPRESA='780 - BTS BAR E RESTAURANTE LTDA';
+function minToHHMM(min){ min=Math.round(Number(min)||0); if(min<=0) return ''; const h=Math.floor(min/60), mm=min%60; return h + mm/100; }
+window.abrirEsocial = async function(){
+  const p=S.periodoAtual; if(!p){ alert('Selecione um período (a competência é o mês dele).'); return; }
+  const ano=p.ano, mes=p.mes, comp=`${ano}-${String(mes).padStart(2,'0')}`;
+  const ini=`${comp}-01`, fim=`${comp}-${String(new Date(ano,mes,0).getDate()).padStart(2,'0')}`;
+  const lim=(Number(S.config?.limite_he_dia_horas)||2)*60;
+  const [pt,cons]=await Promise.all([
+    sb.from('controle_ponto').select('funcionario_id,banco_minutos,noturno_minutos,data').gte('data',ini).lte('data',fim),
+    sb.from('esocial_consumo').select('funcionario_id,valor').eq('competencia',comp),
+  ]);
+  const consMap={}; (cons.data||[]).forEach(c=>consMap[c.funcionario_id]=Number(c.valor)||0);
+  const agg={}; (pt.data||[]).forEach(r=>{ const a=agg[r.funcionario_id]=agg[r.funcionario_id]||{not:0,he:0}; a.not+=Number(r.noturno_minutos)||0; const bm=Number(r.banco_minutos)||0; if(bm>lim)a.he+=bm; });
+  const rows=S.funcionarios.filter(f=>f.codigo_contabil).sort((a,b)=>a.nome.localeCompare(b.nome)).map(f=>({
+    fid:f.id, codigo:f.codigo_contabil, nome:f.nome, vt:f.vale_transporte!==false,
+    notMin:(agg[f.id]||{}).not||0, heMin:(agg[f.id]||{}).he||0, consumo:consMap[f.id]||0 }));
+  esocialModal={ comp, ano, mes, rows }; render();
+};
+window.fecharEsocial=function(){ esocialModal=null; render(); };
+window.esConsumoInput=function(fid,v){ const r=esocialModal.rows.find(x=>x.fid===fid); if(r) r.consumo=v; };
+window.salvarEsocialConsumo=async function(silent){
+  const M=esocialModal; const recs=M.rows.map(r=>({ restaurante_id:S.restaurante.id, funcionario_id:r.fid, competencia:M.comp, valor:Number(r.consumo)||0 }));
+  const { error }=await sb.from('esocial_consumo').upsert(recs,{onConflict:'funcionario_id,competencia'});
+  if(error){ alert('Erro ao salvar consumo: '+error.message); return false; }
+  if(silent!==true) alert('Desconto consumo salvo para a competência '+M.comp+'.');
+  return true;
+};
+window.gerarEsocialXLSX=async function(){
+  if(!window.XLSX){ alert('Biblioteca de planilha não carregou. Recarregue a página.'); return; }
+  if(!(await salvarEsocialConsumo(true))) return;
+  const M=esocialModal; const MM=String(M.mes).padStart(2,'0');
+  const aoa=[];
+  aoa.push([ESOCIAL_EMPRESA]);
+  aoa.push(['Planilha de Lançamentos - '+MM+'/'+M.ano]);
+  aoa.push(['Código','Nome','Adicional noturno','','HE 100%','Vale transporte','Vale farmácia','Vale','DESCONTO CONSUMO','Taxa de Serviço','Taxa de Serv. Recebi','Despesas médicas','Qtd Colunas Auxiliares:#0','Layout:#796']);
+  M.rows.forEach(r=>{ aoa.push([ r.codigo||'', r.nome, minToHHMM(r.notMin), '', minToHHMM(r.heMin), r.vt?'SIM':'', '', '', (Number(r.consumo)>0?Number(r.consumo):''), '', '', '', 'CodContInterm:#0','Qtd Colunas Auxiliares:#0','Layout:#796' ]); });
+  aoa.push(['TOTAL DE COLABORADORES: ', '', ' '+M.rows.length]);
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  for(let i=0;i<M.rows.length;i++){ [2,3,4,5,6,7,8,9,10,11].forEach(ci=>{ const ad=XLSX.utils.encode_cell({r:3+i,c:ci}); if(ws[ad]) ws[ad].z='0.#0'; }); }
+  const merges=[{s:{r:0,c:0},e:{r:0,c:11}},{s:{r:1,c:0},e:{r:1,c:11}},{s:{r:2,c:2},e:{r:2,c:3}}];
+  for(let i=0;i<M.rows.length;i++) merges.push({s:{r:3+i,c:2},e:{r:3+i,c:3}});
+  const lastR=3+M.rows.length; merges.push({s:{r:lastR,c:0},e:{r:lastR,c:1}});
+  ws['!merges']=merges;
+  ws['!cols']=[{wch:8.4},{wch:29.4},{wch:12.7},{wch:2.6},{wch:12.7},{wch:12.9},{wch:12.7},{wch:8},{wch:20},{wch:13.6},{wch:17.8},{wch:16},{wch:12.7},{wch:14}];
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Página 1');
+  XLSX.writeFile(wb,'lancamentos-esocial-'+MM+'-'+M.ano+'.xlsx');
+};
+function esocialModalHTML(){
+  if(!esocialModal) return ''; const M=esocialModal;
+  const totNot=M.rows.reduce((a,r)=>a+r.notMin,0), totHe=M.rows.reduce((a,r)=>a+r.heMin,0);
+  return `<div class="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)fecharEsocial()">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+      <div class="flex items-center justify-between px-5 py-3 border-b border-slate-200"><h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="file-text" class="w-5 h-5 text-emerald-600"></i>Planilha e-Social — competência ${String(M.mes).padStart(2,'0')}/${M.ano}</h3><button onclick="fecharEsocial()" class="text-slate-400 hover:text-slate-700"><i data-feather="x" class="w-5 h-5"></i></button></div>
+      <div class="px-5 py-3 text-[12px] text-slate-500 border-b border-slate-100">${ESOCIAL_EMPRESA} · ${M.rows.length} colaboradores. Horas (adic. noturno e HE) somadas do <strong>mês inteiro</strong>. Confira/edite o <strong>desconto consumo</strong> de cada um e gere a planilha. <span class="text-amber-600">Taxa de Serviço (J/K) sai em branco — aguardando definição do contador.</span></div>
+      <div class="overflow-auto px-5 py-3 flex-1">
+        <table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 sticky top-0"><tr><th class="px-2 py-2 text-left">Código</th><th class="px-2 py-2 text-left">Nome</th><th class="px-2 py-2 text-right">Adic. noturno</th><th class="px-2 py-2 text-right">HE</th><th class="px-2 py-2 text-center">VT</th><th class="px-2 py-2 text-right">Desconto consumo (R$)</th></tr></thead><tbody>
+        ${M.rows.map(r=>`<tr class="border-b border-slate-100"><td class="px-2 py-1.5 font-mono text-slate-500">${r.codigo}</td><td class="px-2 py-1.5 font-medium">${r.nome.split(' ').slice(0,3).join(' ')}</td><td class="px-2 py-1.5 text-right ${r.notMin?'':'text-slate-300'}">${r.notMin?minToHHMM(r.notMin).toFixed(2).replace('.',':'):'—'}</td><td class="px-2 py-1.5 text-right ${r.heMin?'':'text-slate-300'}">${r.heMin?minToHHMM(r.heMin).toFixed(2).replace('.',':'):'—'}</td><td class="px-2 py-1.5 text-center">${r.vt?'<span class="badge bg-green-100 text-green-700">SIM</span>':'<span class="badge bg-slate-100 text-slate-400">NÃO</span>'}</td><td class="px-2 py-1.5 text-right"><input type="number" step="0.01" value="${r.consumo||''}" oninput="esConsumoInput(${r.fid},this.value)" class="w-24 px-2 py-1 border border-slate-200 rounded text-right text-xs" placeholder="0,00"></td></tr>`).join('')}
+        </tbody><tfoot><tr class="bg-slate-50 font-semibold"><td colspan="2" class="px-2 py-2">Totais</td><td class="px-2 py-2 text-right">${(totNot/60).toFixed(1)}h</td><td class="px-2 py-2 text-right">${(totHe/60).toFixed(1)}h</td><td colspan="2"></td></tr></tfoot></table>
+      </div>
+      <div class="flex justify-between items-center gap-2 px-5 py-3 border-t border-slate-200">
+        <button onclick="salvarEsocialConsumo()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100 flex items-center gap-2"><i data-feather="save" class="w-4 h-4"></i>Salvar consumo</button>
+        <div class="flex gap-2"><button onclick="fecharEsocial()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Fechar</button>
+        <button onclick="gerarEsocialXLSX()" class="px-4 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>Gerar planilha (.xlsx)</button></div>
+      </div>
+    </div></div>`;
+}
 </script>
 <script>
 /* ===================== ESCALA (BETA) ===================== */
