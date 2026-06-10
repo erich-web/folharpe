@@ -1482,12 +1482,12 @@ window._viewEscala=function(){
   const metaTab=`<table class="w-full text-center text-xs"><thead><tr><th class="text-left text-slate-400 sticky left-0 bg-white">Hora</th>${S.setores.map(s=>`<th class="px-1 text-slate-500 font-medium" title="${s.nome}">${s.nome.length>7?s.nome.slice(0,6)+'…':s.nome}</th>`).join('')}</tr></thead><tbody>
     ${horas.map(h=>`<tr><td class="px-2 py-0.5 text-left font-semibold text-slate-500 sticky left-0 bg-white">${hl(h)}</td>${S.setores.map(s=>{const val=metaHora(s.id,escMetaDow,h);const dest=s.id===escSetor;return `<td class="p-0.5"><input type="number" min="0" value="${val||''}" ${editavel?'':'disabled'} onchange="escSalvarMetaHora(${s.id},${escMetaDow},${h},this.value)" class="w-10 px-0.5 py-0.5 border ${dest?'border-blue-300 bg-blue-50':'border-slate-200'} rounded text-center text-xs" placeholder="0"></td>`;}).join('')}</tr>`).join('')}
     </tbody></table>`;
-  const heat=card(`<div class="p-4"><h3 class="font-bold text-slate-900 mb-1 flex items-center gap-2"><i data-feather="grid" class="w-4 h-4 text-blue-600"></i>Estrutura por hora <span class="badge bg-slate-100 text-slate-500">${setorNome(escSetor)}</span></h3>
+  const estruturaBox=card(`<div class="p-4"><h3 class="font-bold text-slate-900 mb-1 flex items-center gap-2"><i data-feather="grid" class="w-4 h-4 text-blue-600"></i>Estrutura por hora <span class="badge bg-slate-100 text-slate-500">${setorNome(escSetor)}</span></h3>
     <p class="text-xs text-slate-500 mb-3">Realizado (da escala) × meta. <span class="text-rose-600 font-medium">vermelho</span> = abaixo da meta · <span class="text-amber-700 font-medium">âmbar</span> = acima · <span class="text-emerald-600 font-medium">verde</span> = na meta.</p>
     <p class="text-[11px] font-semibold text-slate-500 mb-1">Realizado · ${setorNome(escSetor)} · ${MESES_F[escMes-1]} (semana selecionada)</p>
-    <div class="overflow-x-auto mb-4">${realTab}</div>
-    <div class="flex items-center gap-2 mb-1"><h4 class="text-xs font-semibold text-slate-500 flex items-center gap-2"><i data-feather="target" class="w-3.5 h-3.5"></i>Meta de colaboradores por hora × setor</h4><span class="text-[11px] text-slate-400">dia:</span>${dowSel}</div>
-    <p class="text-[10px] text-slate-400 mb-1">Defina o nº ideal por <strong>setor</strong> em cada hora, para o dia escolhido (vale para todas as semanas). A coluna azul é o setor aberto acima. Futuro: IA sugere pela venda/movimento.</p>
+    <div class="overflow-x-auto">${realTab}</div></div>`);
+  const metaBox=card(`<div class="p-4"><div class="flex items-center gap-2 mb-1 flex-wrap"><h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="target" class="w-4 h-4 text-blue-600"></i>Meta de colaboradores por hora × setor</h3><span class="text-[11px] text-slate-400">dia:</span>${dowSel}</div>
+    <p class="text-[11px] text-slate-400 mb-2">Defina o nº ideal por <strong>setor</strong> em cada hora, para o dia escolhido (vale para todas as semanas). A coluna azul é o setor aberto acima. Futuro: IA sugere pela venda/movimento.</p>
     <div class="overflow-x-auto">${metaTab}</div></div>`);
   const sug=[]; dias.forEach(d=>{const dow=new Date(d+'T00:00:00').getDay();let falta=0,exc=0,hf=[],he=[];horas.forEach(h=>{const m=metaHora(escSetor,dow,h);if(m<=0)return;const n=contaHora(d,h);if(n<m){falta+=(m-n);hf.push(hl(h));}else if(n>m){exc+=(n-m);he.push(hl(h));}});const dd=`${DOWesc[dow]} ${d.slice(8,10)}/${d.slice(5,7)}`;if(falta>0)sug.push({t:'falta',txt:`${dd}: ${falta} pessoa-hora abaixo da meta (${hf.join(', ')}).`});if(exc>0)sug.push({t:'excesso',txt:`${dd}: ${exc} pessoa-hora acima da meta (${he.join(', ')}) — revisar custo.`});});
   const sugBox=card(`<div class="p-4"><h3 class="font-bold text-slate-900 mb-3 flex items-center gap-2"><i data-feather="zap" class="w-4 h-4 text-amber-500"></i>Sugestões de otimização</h3>
@@ -1503,7 +1503,11 @@ window._viewEscala=function(){
       <span class="text-slate-300 hidden md:inline">|</span>
       <div class="flex items-center gap-1"><button onclick="escSemana(${escSemanaIdx-1})" class="p-1.5 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-left" class="w-4 h-4"></i></button><span class="text-sm text-slate-600">Sem ${escSemanaIdx+1}/${ws.length} · ${semInfo}</span><button onclick="escSemana(${escSemanaIdx+1})" class="p-1.5 border border-slate-200 rounded hover:bg-slate-100"><i data-feather="chevron-right" class="w-4 h-4"></i></button></div>
     </div>`,'mb-4');
-  return pageHeader('Escala','Monte e otimize a escala por setor, semana e período · BETA')+nav+addBox+grid+`<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">${heat}${sugBox}</div>`+`<div class="mt-4">${folgBox}</div>`+escEditorHTML();
+  return pageHeader('Escala','Monte e otimize a escala por setor, semana e período · BETA')+nav+addBox+grid
+    +`<div class="mt-4">${estruturaBox}</div>`
+    +`<div class="mt-4">${metaBox}</div>`
+    +`<div class="mt-4">${sugBox}</div>`
+    +`<div class="mt-4">${folgBox}</div>`+escEditorHTML();
 };
 </script>
 </body>
