@@ -523,7 +523,7 @@ window.salvarConfig = async function(){
 <script>
 /* ===================== COMISSÃO QUINZENAL (motor real) ===================== */
 function agregaPonto(funcId){
-  const cnt={Falta:0,Atraso:0,'Advertência':0,Dobra:0,Extra:0,Normal:0,Folga:0,Atestado:0};
+  const cnt={Falta:0,Atraso:0,'Advertência':0,Dobra:0,Extra:0,Normal:0,Folga:0,Atestado:0,Inativo:0};
   S.ponto.filter(p=>p.funcionario_id===funcId).forEach(p=>{ cnt[p.status]=(cnt[p.status]||0)+1; });
   return cnt;
 }
@@ -544,8 +544,8 @@ function calcComissao(){
 
   const rows=S.funcionarios.map(f=>{
     const cg=f.cargos||{}; const base=Number(cg.pontos||0); const setor=cg.setores?.nome||'Outros';
-    const c=agregaPonto(f.id); const falta=c.Falta,atraso=c.Atraso,adv=c['Advertência'];
-    const diasTrab=Math.max(0,dias-falta);
+    const c=agregaPonto(f.id); const falta=c.Falta,atraso=c.Atraso,adv=c['Advertência'],inativo=c.Inativo||0;
+    const diasTrab=Math.max(0,dias-falta-inativo);   // dias inativos não contam p/ comissão (proporcional)
     const Z=(diasTrab/dias)*base;
     let desc=Z*(falta*Number(cfg.desconto_falta_pct)/100 + atraso*Number(cfg.desconto_atraso_pct)/100 + adv*Number(cfg.desconto_advertencia_pct)/100);
     desc=Math.min(desc,Z);
@@ -797,8 +797,8 @@ window.salvarResultadoComissao = async function(){
 </script>
 <script>
 /* ===================== FOLHA DE PONTO (grade editável, grava no banco) ===================== */
-const ST_PONTO=['Normal','Falta','Atraso','Dobra','Folga','Advertência','Atestado','Extra','Férias','Afastamento'];
-const ST_AB={'Normal':['N','text-green-700'],'Falta':['F','bg-red-100 text-red-700 font-bold'],'Atraso':['A','bg-orange-100 text-orange-700 font-bold'],'Dobra':['D','bg-purple-100 text-purple-700 font-bold'],'Folga':['Fg','text-slate-400'],'Advertência':['Ad','bg-rose-100 text-rose-700 font-bold'],'Atestado':['At','bg-amber-100 text-amber-700'],'Extra':['E','bg-blue-100 text-blue-700 font-bold'],'Férias':['Fé','bg-teal-100 text-teal-700'],'Afastamento':['Af','bg-slate-200 text-slate-600']};
+const ST_PONTO=['Normal','Falta','Atraso','Dobra','Folga','Advertência','Atestado','Extra','Férias','Afastamento','Inativo'];
+const ST_AB={'Normal':['N','text-green-700'],'Falta':['F','bg-red-100 text-red-700 font-bold'],'Atraso':['A','bg-orange-100 text-orange-700 font-bold'],'Dobra':['D','bg-purple-100 text-purple-700 font-bold'],'Folga':['Fg','text-slate-400'],'Advertência':['Ad','bg-rose-100 text-rose-700 font-bold'],'Atestado':['At','bg-amber-100 text-amber-700'],'Extra':['E','bg-blue-100 text-blue-700 font-bold'],'Férias':['Fé','bg-teal-100 text-teal-700'],'Afastamento':['Af','bg-slate-200 text-slate-600'],'Inativo':['In','bg-slate-500 text-white font-bold']};
 const DOW1=['D','S','T','Q','Q','S','S'];
 function diasDoPeriodo(p){ const out=[]; let d=new Date(p.data_inicio+'T00:00:00'); const fim=new Date(p.data_fim+'T00:00:00'); let g=0; while(d<=fim && g<40){ out.push(new Date(d)); d.setDate(d.getDate()+1); g++; } return out; }
 function statusDe(funcId, ds){ const r=S.ponto.find(p=>p.funcionario_id===funcId && p.data===ds); return r?r.status:'Normal'; }
