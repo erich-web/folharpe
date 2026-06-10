@@ -683,29 +683,31 @@ function tabelaComissao(c){
   const headPts=`<th class="px-3 py-3 text-left">Funcionário</th><th class="px-2 py-3 text-left">Setor</th>
     <th class="px-2 py-3 text-center">Base</th><th class="px-2 py-3 text-center">Qual.</th><th class="px-2 py-3 text-center">Desc.</th><th class="px-2 py-3 text-center">Finais</th>`;
   const heCell=r=>`<td class="px-2 py-2 text-right ${r.hePagar>0?'text-red-600 font-semibold':'text-slate-300'}" title="${r.heMin?fmtMin(r.heMin)+' a pagar':''}">${r.hePagar>0?money(r.hePagar):'—'}</td>`;
+  const repCell=r=>`<td class="px-2 py-2 text-right ${r.repique>0?'text-teal-700 font-medium':'text-slate-300'}" title="redistribuição dos pontos perdidos do setor (já incluído na comissão)">${r.repique>0?money(r.repique):'—'}</td>`;
+  const headRep=`<th class="px-2 py-3 text-right bg-teal-50">Repique</th>`;
   const wrap=(head,body,nota)=>card(`<div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600 border-b border-slate-200"><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>
     <div class="p-3 text-[11px] text-slate-500 border-t border-slate-200">${nota}</div>`);
 
   if(c.tipo==='adiantamento'){
-    const head=headPts+`<th class="px-2 py-3 text-right bg-amber-50">40% Salário</th><th class="px-2 py-3 text-right bg-green-50">Comissão</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE (R$)</th><th class="px-3 py-3 text-right bg-blue-50">Pago no dia 20</th>`;
+    const head=headPts+`<th class="px-2 py-3 text-right bg-amber-50">40% Salário</th><th class="px-2 py-3 text-right bg-green-50">Comissão</th>${headRep}<th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE (R$)</th><th class="px-3 py-3 text-right bg-blue-50">Pago no dia 20</th>`;
     const body=c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
       <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${nome(r)}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pts(r)}
       <td class="px-2 py-2 text-right font-semibold text-amber-700 bg-amber-50/40">${money(r.adiantSalario)}</td>
-      <td class="px-2 py-2 text-right font-semibold text-green-700 bg-green-50/40">${money(r.comTotal)}</td>
+      <td class="px-2 py-2 text-right font-semibold text-green-700 bg-green-50/40">${money(r.comTotal)}</td>${repCell(r)}
       <td class="px-2 py-2 text-right ${r.benef?'':'text-slate-300'}">${r.benef?money(r.benef):'—'}</td>${heCell(r)}
       <td class="px-3 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.totalPagar)}</td></tr>`).join('')
-      +`<tr class="bg-slate-50 font-bold"><td class="px-3 py-2" colspan="6">TOTAIS</td><td class="px-2 py-2 text-right text-amber-700">${money(c.rows.reduce((a,r)=>a+r.adiantSalario,0))}</td><td class="px-2 py-2 text-right text-green-700">${money(c.totalComissao)}</td><td colspan="2"></td><td class="px-3 py-2 text-right text-blue-700">${money(c.totalPagar)}</td></tr>`;
+      +`<tr class="bg-slate-50 font-bold"><td class="px-3 py-2" colspan="6">TOTAIS</td><td class="px-2 py-2 text-right text-amber-700">${money(c.rows.reduce((a,r)=>a+r.adiantSalario,0))}</td><td class="px-2 py-2 text-right text-green-700">${money(c.totalComissao)}</td><td class="px-2 py-2 text-right text-teal-700">${money(c.rows.reduce((a,r)=>a+(r.repique||0),0))}</td><td colspan="2"></td><td class="px-3 py-2 text-right text-blue-700">${money(c.totalPagar)}</td></tr>`;
     return wrap(head,body,`<strong>Holerite do dia 20</strong> mostra 40% do salário + benefícios + HE (a comissão NÃO aparece no holerite do adiantamento — ela é exibida no oficial). A comissão e os 40% ficam guardados para o oficial deduzir.`);
   }
   if(c.tipo==='oficial'){
-    const head=headPts+`<th class="px-2 py-3 text-right">Com. período</th><th class="px-2 py-3 text-right">Com. adiant.</th><th class="px-2 py-3 text-right bg-blue-50">Comissão TOTAL</th>
+    const head=headPts+`<th class="px-2 py-3 text-right">Com. período</th>${headRep}<th class="px-2 py-3 text-right">Com. adiant.</th><th class="px-2 py-3 text-right bg-blue-50">Comissão TOTAL</th>
       <th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE</th>
       <th class="px-2 py-3 text-right bg-amber-50">− Adiant. salário</th><th class="px-2 py-3 text-right bg-amber-50">− Adiant. comissão</th>
       <th class="px-3 py-3 text-right bg-green-100">HOLERITE</th>
       <th class="px-2 py-3 text-right">Mín.Gar.(fora)</th><th class="px-2 py-3 text-right bg-indigo-50">Com.Dentro</th><th class="px-2 py-3 text-right bg-indigo-50">Com.Fora</th>`;
     const body=c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
       <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${nome(r)}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pts(r)}
-      <td class="px-2 py-2 text-right">${money(r.comissaoOficial)}</td>
+      <td class="px-2 py-2 text-right">${money(r.comissaoOficial)}</td>${repCell(r)}
       <td class="px-2 py-2 text-right ${r.adiantComPago>0?'text-slate-600':'text-slate-300'}">${r.adiantComPago>0?money(r.adiantComPago):'—'}</td>
       <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comissaoTotal)}</td>
       <td class="px-2 py-2 text-right text-slate-600">${money(r.salario)}</td>
@@ -720,12 +722,12 @@ function tabelaComissao(c){
   }
   if(c.tipo==='rescisao'){
     if(!c.rows.length) return card(`<div class="p-12 text-center text-slate-400"><i data-feather="user-x" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Escolha o funcionário da rescisão no seletor acima e clique em Calcular.</p></div>`);
-    const head=headPts+`<th class="px-2 py-3 text-center">Dias trab.</th><th class="px-2 py-3 text-right bg-rose-50">Salário proporc.</th><th class="px-2 py-3 text-right bg-blue-50">Comissão</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE</th><th class="px-3 py-3 text-right bg-green-100">TOTAL RESCISÃO</th>`;
+    const head=headPts+`<th class="px-2 py-3 text-center">Dias trab.</th><th class="px-2 py-3 text-right bg-rose-50">Salário proporc.</th><th class="px-2 py-3 text-right bg-blue-50">Comissão</th>${headRep}<th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE</th><th class="px-3 py-3 text-right bg-green-100">TOTAL RESCISÃO</th>`;
     const body=c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
       <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${nome(r)}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pts(r)}
       <td class="px-2 py-2 text-center">${r.diasTrab}</td>
       <td class="px-2 py-2 text-right font-semibold text-rose-700 bg-rose-50/40">${money(r.salarioProp)}</td>
-      <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comTotal)}</td>
+      <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comTotal)}</td>${repCell(r)}
       <td class="px-2 py-2 text-right ${r.benef?'':'text-slate-300'}">${r.benef?money(r.benef):'—'}</td>${heCell(r)}
       <td class="px-3 py-2 text-right font-bold text-green-800 bg-green-100/60">${money(r.holerite)}</td></tr>`).join('');
     return wrap(head,body,`<strong>Rescisão</strong> = saldo de salário (proporcional: salário × dias trabalhados ÷ 30) + comissão do período + benefícios + HE. Verbas legais (férias, aviso, FGTS) ficam para depois. Ao salvar, o funcionário é marcado como <strong>inativo</strong>.`);
@@ -745,10 +747,10 @@ function tabelaComissao(c){
     return wrap(head,body,`<strong>13º salário</strong> (só salário, sem comissão). Base = salário × meses trabalhados no ano ÷ 12 (admissão; mês com 15+ dias conta cheio). ${seg?'2ª parcela = 50% da base − INSS − IRRF.':'1ª parcela = 50% da base (sem descontos).'}`);
   }
   // outro: folha cheia
-  const head=headPts+`<th class="px-2 py-3 text-right bg-blue-50">Comissão</th><th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE</th><th class="px-2 py-3 text-right">Mín.Gar.(fora)</th><th class="px-3 py-3 text-right bg-green-50">TOTAL</th>`;
+  const head=headPts+`<th class="px-2 py-3 text-right bg-blue-50">Comissão</th>${headRep}<th class="px-2 py-3 text-right">Salário</th><th class="px-2 py-3 text-right">Benef.</th><th class="px-2 py-3 text-right">HE</th><th class="px-2 py-3 text-right">Mín.Gar.(fora)</th><th class="px-3 py-3 text-right bg-green-50">TOTAL</th>`;
   const body=c.rows.map(r=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
     <td class="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">${nome(r)}</td><td class="px-2 py-2">${setorBadge(r.setor)}</td>${pts(r)}
-    <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comTotal)}</td>
+    <td class="px-2 py-2 text-right font-bold text-blue-700 bg-blue-50/50">${money(r.comTotal)}</td>${repCell(r)}
     <td class="px-2 py-2 text-right text-slate-600">${money(r.salario)}</td>
     <td class="px-2 py-2 text-right ${r.benef?'':'text-slate-300'}">${r.benef?money(r.benef):'—'}</td>${heCell(r)}
     <td class="px-2 py-2 text-right ${r.minComp>0?'text-rose-600 font-semibold':'text-slate-300'}">${r.minComp>0?'+'+money(r.minComp):'—'}</td>
@@ -758,9 +760,9 @@ function tabelaComissao(c){
 
 window.exportComissaoCSV = function(){
   const c=calcComissao(); if(!c) return; const sep=';';
-  const head=['Funcionário','Setor','Tipo','Base','Qualif.','Desc.','Finais','Comissão período','Comissão adiant.','Comissão TOTAL','40% Salário','Salário','Benefícios','HE','Adiant. salário pago','Adiant. comissão pago','HOLERITE','Mínimo (por fora)','Com.Dentro','Com.Fora'];
+  const head=['Funcionário','Setor','Tipo','Base','Qualif.','Desc.','Finais','Comissão','Repique','Comissão período','Comissão adiant.','Comissão TOTAL','40% Salário','Salário','Benefícios','HE','Adiant. salário pago','Adiant. comissão pago','HOLERITE','Mínimo (por fora)','Com.Dentro','Com.Fora'];
   const br=v=>typeof v==='number'?v.toFixed(2).replace('.',','):'"'+String(v).replace(/"/g,'""')+'"';
-  const linhas=c.rows.map(r=>[r.f.nome,r.setor,TIPO_PAG[c.tipo]||c.tipo,r.base,r.Z,r.desc,r.finais,r.comTotal,r.adiantComPago||0,r.comissaoTotal,r.adiantSalario||0,r.salario,r.benef,r.hePagar,r.adiantSalPago||0,r.adiantComPago||0,r.holerite,r.minComp,r.comDentro,r.comFora].map(br).join(sep));
+  const linhas=c.rows.map(r=>[r.f.nome,r.setor,TIPO_PAG[c.tipo]||c.tipo,r.base,r.Z,r.desc,r.finais,r.comissao||0,r.repique||0,r.comTotal,r.adiantComPago||0,r.comissaoTotal,r.adiantSalario||0,r.salario,r.benef,r.hePagar,r.adiantSalPago||0,r.adiantComPago||0,r.holerite,r.minComp,r.comDentro,r.comFora].map(br).join(sep));
   const csv='﻿'+[head.join(sep),...linhas].join('\r\n');
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));
   a.download='comissao-'+(c.tipo||'periodo')+'-'+(S.periodoAtual?.data_inicio||'')+'.csv'; a.click(); URL.revokeObjectURL(a.href);
