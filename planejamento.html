@@ -7,6 +7,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/feather-icons"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>.badge{display:inline-flex;align-items:center;padding:1px 8px;border-radius:9999px;font-size:11px;font-weight:600}.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px}.animate-fade{animation:f .2s ease}@keyframes f{from{opacity:0;transform:translateY(4px)}to{opacity:1}}</style>
 </head>
 <body class="bg-slate-50 text-slate-800">
@@ -27,19 +28,21 @@ const hl=h=>String(h).padStart(2,'0')+'h';
 const S={session:null,perfil:null,setores:[],cargos:[],selSetor:'todos',modo:'premissa',dowSel:1,
   premissa:[],semana:mondayOf(hoje()),escala:[],meta:[],escalaRef:[],loading:true,erro:null,ok:null};
 
-async function boot(){ const {data:{session}}=await sb.auth.getSession(); S.session=session; if(session)await carregar(); S.loading=false; render(); }
+async function boot(){
+  // página PÚBLICA: não exige login. Se houver sessão (logado em outra página), habilita "Salvar no sistema".
+  const {data:{session}}=await sb.auth.getSession(); S.session=session;
+  if(session){ try{ const {data}=await sb.from('profiles').select('*').eq('id',session.user.id).single(); S.perfil=data; }catch(e){} }
+  await carregar(); S.loading=false; render();
+}
 sb.auth.onAuthStateChange((_e,session)=>{ S.session=session; });
-async function entrar(){ S.erro=null; const {error}=await sb.auth.signInWithPassword({email:val('login_email'),password:val('login_senha')}); if(error){S.erro='E-mail ou senha inválidos.';render();return;} const {data:{session}}=await sb.auth.getSession(); S.session=session; S.loading=true; render(); await carregar(); S.loading=false; render(); }
 async function sair(){ await sb.auth.signOut(); S.session=null; S.perfil=null; render(); }
 
 async function carregar(){
-  const uid=S.session.user.id;
-  const [prof,set,car]=await Promise.all([
-    sb.from('profiles').select('*').eq('id',uid).single(),
+  const [set,car]=await Promise.all([
     sb.from('setores').select('id,nome').eq('restaurante_id',1).order('ordem'),
     sb.from('cargos').select('id,nome,setor_id').eq('restaurante_id',1).order('nome'),
   ]);
-  S.perfil=prof.data; S.setores=set.data||[]; S.cargos=car.data||[];
+  S.setores=set.data||[]; S.cargos=car.data||[];
   if(S.selSetor==='todos' && S.setores.length) S.selSetor=String(S.setores[0].id);
   await carregarDados();
 }
@@ -69,6 +72,7 @@ const dias=()=>[0,1,2,3,4,5,6].map(i=>addDias(S.semana,i));
 function cargosSetor(){ return S.cargos.filter(c=>c.setor_id===+S.selSetor).map(c=>c.nome).sort(); }
 function cargosScope(){ const s=new Set(); (S.escala||[]).forEach(r=>{ if(r.status==='trabalha') s.add(r.cargo||'—'); }); return [...s].sort(); }
 function premissaVal(cargo,h){ const m=(S.premissa||[]).find(x=>x.cargo===cargo&&x.dow===S.dowSel&&x.hora===h); return m?Number(m.meta):0; }
+function premissaValDow(cargo,dow,h){ const m=(S.premissa||[]).find(x=>x.cargo===cargo&&x.dow===dow&&x.hora===h); return m?Number(m.meta):0; }
 // realizado de referência: data da semana atual com o dow selecionado
 function dataRefDow(){ const base=mondayOf(hoje()); for(let i=0;i<7;i++){const d=addDias(base,i); if(new Date(d+'T00:00:00').getDay()===S.dowSel) return d;} return null; }
 function realRefCargo(cargo,h){ const d=dataRefDow(); if(!d) return 0; return (S.escalaRef||[]).filter(r=>r.data===d&&((r.cargo||'—')===cargo)&&coversHora(r,h)).length; }
@@ -91,28 +95,32 @@ window.salvarPremissa=async function(btn){
   await sb.from('escala_meta_hora').upsert(emh,{onConflict:'restaurante_id,setor_id,dow,hora'});
   S.ok='Premissa salva e meta do setor sincronizada.'; await carregarDados(); render(); setTimeout(()=>{S.ok=null;},5000);
 };
+window.baixarPremissa=function(){
+  if(!window.XLSX){ alert('Biblioteca de planilha não carregou. Recarregue a página.'); return; }
+  const cgs=cargosSetor(); const setorNm=(S.setores.find(s=>String(s.id)===String(S.selSetor))||{}).nome||'setor';
+  // valores editados do dia atual (inputs) + valores salvos dos demais dias
+  const curr={}; cgs.forEach((c,ci)=>HORAS_PLAN.forEach(h=>{ curr[c+'|'+h]=+val(`p_${ci}_${h}`)||0; }));
+  const pv=(c,dow,h)=> dow===S.dowSel ? (curr[c+'|'+h]||0) : premissaValDow(c,dow,h);
+  const wb=XLSX.utils.book_new();
+  DOWS.forEach(dow=>{
+    const aoa=[['Hora',...cgs,'Total']];
+    HORAS_PLAN.forEach(h=>{ const linha=[hl(h)]; let tot=0; cgs.forEach(c=>{const v=pv(c,dow,h); linha.push(v||0); tot+=v;}); linha.push(tot); aoa.push(linha); });
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    XLSX.utils.book_append_sheet(wb,ws,DOWF[dow].slice(0,10));
+  });
+  XLSX.writeFile(wb,'premissa-headcount-'+setorNm.toLowerCase().replace(/\s+/g,'-')+'.xlsx');
+};
+window.salvarSistema=async function(btn){ if(btn){btn.disabled=true;btn.textContent='Salvando…';} await salvarPremissa(); };
 
-function viewLogin(){
-  return `<div class="min-h-screen flex items-center justify-center p-4"><div class="w-full max-w-sm">
-    <div class="flex flex-col items-center mb-6"><div class="w-14 h-14 bg-gradient-to-br from-blue-600 to-blue-700 rounded-xl flex items-center justify-center mb-3"><i data-feather="bar-chart-2" class="text-white w-7 h-7"></i></div>
-      <h1 class="text-xl font-bold">Planejamento Estratégico</h1><p class="text-sm text-slate-500">Mercearia Amauri · premissa de headcount</p></div>
-    <div class="card p-6">${S.erro?`<div class="mb-4 p-3 rounded text-sm bg-red-50 text-red-700 border border-red-200">${S.erro}</div>`:''}
-      <label class="text-xs font-medium text-slate-500 block mb-1">E-mail</label>
-      <input id="login_email" type="email" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-3" placeholder="voce@gruporpe.com.br">
-      <label class="text-xs font-medium text-slate-500 block mb-1">Senha</label>
-      <input id="login_senha" type="password" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-4" placeholder="••••••••" onkeydown="if(event.key==='Enter')entrar()">
-      <button onclick="entrar()" class="w-full px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">Entrar</button>
-    </div><p class="text-center text-xs text-slate-400 mt-4">Grupo RPE</p></div></div>`;
-}
 
 /* ---- modo PREMISSA (editar) ---- */
 function viewPremissa(){
-  const edit=podeEditar(); const cgs=cargosSetor();
+  const canSave=!!S.session && podeEditar(); const cgs=cargosSetor();
   const setorSel=`<select onchange="setSetor(this.value)" class="px-2 py-1.5 border border-slate-200 rounded text-sm">${S.setores.map(s=>`<option value="${s.id}" ${String(s.id)===String(S.selSetor)?'selected':''}>${s.nome}</option>`).join('')}</select>`;
   const dowTabs=DOWS.map(d=>`<button onclick="setDow(${d})" class="px-3 py-1.5 rounded text-sm ${d===S.dowSel?'bg-blue-600 text-white':'bg-slate-100 text-slate-600 hover:bg-slate-200'}">${DOWF[d]}</button>`).join('');
   const totHora=h=>cgs.reduce((a,c)=>a+premissaVal(c,h),0);
   const tabela=cgs.length?`<div class="overflow-x-auto"><table class="w-full text-center text-xs"><thead><tr><th class="px-2 py-2 text-left text-slate-400 sticky left-0 bg-white">Hora</th>${cgs.map(c=>`<th class="px-1 py-2 text-slate-600 font-medium" title="${c}">${c.length>12?c.slice(0,11)+'…':c}</th>`).join('')}<th class="px-2 py-2 text-blue-700">Total</th></tr></thead><tbody>
-    ${HORAS_PLAN.map(h=>`<tr><td class="px-2 py-1 text-left font-semibold text-slate-500 sticky left-0 bg-white">${hl(h)}</td>${cgs.map((c,ci)=>{const ref=realRefCargo(c,h);return `<td class="p-0.5"><input id="p_${ci}_${h}" type="number" min="0" value="${premissaVal(c,h)||''}" ${edit?'':'disabled'} class="w-12 px-1 py-1 border border-slate-200 rounded text-center text-xs" placeholder="0"><div class="text-[8px] text-slate-300 leading-none mt-0.5" title="realizado na semana atual">${ref?'esc '+ref:''}</div></td>`;}).join('')}<td class="px-2 py-1 font-bold text-blue-700">${totHora(h)||'—'}</td></tr>`).join('')}
+    ${HORAS_PLAN.map(h=>`<tr><td class="px-2 py-1 text-left font-semibold text-slate-500 sticky left-0 bg-white">${hl(h)}</td>${cgs.map((c,ci)=>{const ref=realRefCargo(c,h);return `<td class="p-0.5"><input id="p_${ci}_${h}" type="number" min="0" value="${premissaVal(c,h)||''}" class="w-12 px-1 py-1 border border-slate-200 rounded text-center text-xs" placeholder="0"><div class="text-[8px] text-slate-300 leading-none mt-0.5" title="realizado na semana atual">${ref?'esc '+ref:''}</div></td>`;}).join('')}<td class="px-2 py-1 font-bold text-blue-700">${totHora(h)||'—'}</td></tr>`).join('')}
     </tbody></table></div>`:'<p class="text-sm text-slate-400 py-4">Este setor não tem cargos cadastrados.</p>';
   return `<div class="card p-4 mb-3 flex flex-wrap items-center gap-3">
       <span class="text-sm font-semibold text-slate-700 flex items-center gap-2"><i data-feather="target" class="w-4 h-4 text-blue-600"></i>Setor</span>${setorSel}
@@ -121,7 +129,8 @@ function viewPremissa(){
     <div class="flex flex-wrap gap-1 mb-3">${dowTabs}</div>
     <div class="card p-4">
       <div class="flex items-center justify-between mb-3 flex-wrap gap-2"><h3 class="font-bold text-slate-900 flex items-center gap-2"><i data-feather="edit-3" class="w-4 h-4 text-blue-600"></i>Premissa · ${DOWF[S.dowSel]} · ${cgs.length?'':''}</h3>
-        ${edit?`<button onclick="salvarPremissa(this)" class="px-4 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-700 flex items-center gap-2"><i data-feather="save" class="w-4 h-4"></i>Salvar premissa (${DOWF[S.dowSel]})</button>`:'<span class="badge bg-slate-100 text-slate-500">somente leitura</span>'}</div>
+        <div class="flex gap-2"><button onclick="baixarPremissa(this)" class="px-4 py-2 bg-emerald-600 text-white rounded text-sm font-medium hover:bg-emerald-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>Baixar premissa (Excel)</button>${canSave?`<button onclick="salvarSistema(this)" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100 flex items-center gap-2" title="persiste a premissa e sincroniza a meta do headcount no sistema"><i data-feather="save" class="w-4 h-4"></i>Salvar no sistema</button>`:''}</div></div>
+
       <p class="text-[11px] text-slate-400 mb-3">"esc N" abaixo do campo = quantas pessoas daquele cargo estão escaladas nessa hora <strong>na semana atual</strong> (referência). A coluna Total alimenta a meta de headcount do setor no sistema.</p>
       ${tabela}
     </div>`;
@@ -156,17 +165,15 @@ function viewRealizado(){
 function viewApp(){
   const tab=(m,l)=>`<button onclick="setModo('${m}')" class="px-4 py-2 rounded-lg text-sm font-medium ${S.modo===m?'bg-blue-600 text-white':'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'}">${l}</button>`;
   return `<div class="max-w-6xl mx-auto p-4 md:p-8 animate-fade">
-    <div class="flex items-center justify-between mb-5"><div><h1 class="text-2xl font-bold">Planejamento Estratégico</h1><p class="text-sm text-slate-500">Olá, ${S.perfil?.nome||S.session.user.email}</p></div>
-      <button onclick="sair()" class="text-slate-500 hover:text-red-600 flex items-center gap-1 text-sm"><i data-feather="log-out" class="w-4 h-4"></i>Sair</button></div>
+    <div class="flex items-center justify-between mb-5"><div><h1 class="text-2xl font-bold">Planejamento Estratégico</h1><p class="text-sm text-slate-500">Mercearia Amauri · premissa de headcount</p></div>
+      ${S.session?`<button onclick="sair()" class="text-slate-500 hover:text-red-600 flex items-center gap-1 text-sm"><i data-feather="log-out" class="w-4 h-4"></i>Sair</button>`:''}</div>
     ${S.ok?`<div class="mb-4 p-3 rounded text-sm bg-emerald-50 text-emerald-700 border border-emerald-200">${S.ok}</div>`:''}
-    ${podeVer()?`
-      <div class="flex gap-2 mb-4">${tab('premissa','Premissa (editar)')}${tab('realizado','Realizado (semana)')}</div>
-      ${S.modo==='premissa'?viewPremissa():viewRealizado()}
-    `:'<div class="card p-6 text-center text-slate-500">Seu usuário não tem permissão. Fale com o RH.</div>'}
+    <div class="flex gap-2 mb-4">${tab('premissa','Premissa (editar)')}${tab('realizado','Realizado (semana)')}</div>
+    ${S.modo==='premissa'?viewPremissa():viewRealizado()}
   </div>`;
 }
 
-function render(){ const root=document.getElementById('root'); if(S.loading){ root.innerHTML='<div class="min-h-screen flex items-center justify-center text-slate-400">Carregando…</div>'; return; } root.innerHTML=S.session?viewApp():viewLogin(); feather.replace(); }
+function render(){ const root=document.getElementById('root'); if(S.loading){ root.innerHTML='<div class="min-h-screen flex items-center justify-center text-slate-400">Carregando…</div>'; return; } root.innerHTML=viewApp(); feather.replace(); }
 boot();
 </script>
 </body>
