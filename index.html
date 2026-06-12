@@ -111,7 +111,7 @@ async function carregarDados(){
     const r = await sb.from('restaurantes').select('*').order('id').limit(1).single();
     S.restaurante = r.data;
     const rid = S.restaurante?.id;
-    const [cfg, set, car, fun, rat, rank, cic, per, sol, pag] = await Promise.all([
+    const [cfg, set, car, fun, rat, rank, cic, per, sol, pag, afast] = await Promise.all([
       sb.from('config_remuneracao').select('*').eq('restaurante_id',rid).single(),
       sb.from('setores').select('*').eq('restaurante_id',rid).order('ordem'),
       sb.from('cargos').select('*, setores(nome)').eq('restaurante_id',rid).order('pontos',{ascending:false}),
@@ -122,10 +122,11 @@ async function carregarDados(){
       sb.from('periodos').select('*, ciclos_pagamento(nome)').eq('restaurante_id',rid).order('data_inicio',{ascending:false}),
       sb.from('solicitacoes_extra').select('*, setores(nome), funcionarios(nome)').eq('restaurante_id',rid).order('data',{ascending:false}),
       sb.from('pagamentos').select('*, periodos(data_inicio,data_fim,ano)').eq('restaurante_id',rid).order('data_pagamento',{ascending:false}),
+      sb.from('afastamento').select('*').eq('restaurante_id',rid),
     ]);
     S.config=cfg.data; S.setores=set.data||[]; S.cargos=car.data||[]; S.funcionarios=fun.data||[];
     S.rateio=rat.data||[]; S.ranking=rank.data||[]; S.ciclos=cic.data||[];
-    S.periodos=per.data||[]; S.solicitacoes=sol.data||[]; S.pagamentos=pag.data||[];
+    S.periodos=per.data||[]; S.solicitacoes=sol.data||[]; S.pagamentos=pag.data||[]; S.afastamentos=afast.data||[];
     const prof=await sb.from('profiles').select('*').eq('id',S.session.user.id).single(); S.perfil=prof.data;
     if(S.perfil?.papel==='admin'){ const us=await sb.from('profiles').select('*').order('email'); S.usuarios=us.data||[]; }
     if(!S.periodoAtual && S.periodos.length) S.periodoAtual=S.periodos[0];
@@ -137,12 +138,13 @@ async function carregarDados(){
 }
 async function carregarPonto(){
   S.adiantAnt={}; S.adiantAntPeriodo=null;
-  if(!S.periodoAtual){ S.ponto=[]; S.rankingPeriodo=[]; return; }
-  const [pt, rp] = await Promise.all([
+  if(!S.periodoAtual){ S.ponto=[]; S.rankingPeriodo=[]; S.comEspecial=[]; return; }
+  const [pt, rp, ce] = await Promise.all([
     sb.from('controle_ponto').select('*').gte('data',S.periodoAtual.data_inicio).lte('data',S.periodoAtual.data_fim),
     sb.from('ranking_periodo').select('*').eq('periodo_id',S.periodoAtual.id),
+    sb.from('comissao_especial').select('*').eq('periodo_id',S.periodoAtual.id),
   ]);
-  S.ponto=pt.data||[]; S.rankingPeriodo=rp.data||[];
+  S.ponto=pt.data||[]; S.rankingPeriodo=rp.data||[]; S.comEspecial=ce.data||[];
   // OFICIAL: puxa o último adiantamento do mês anterior (salário 40% + comissão guardados)
   if(S.periodoAtual.tipo_pagamento==='oficial'){
     const p=S.periodoAtual; const mesAnt=p.mes-1>0?p.mes-1:12; const anoAnt=p.mes-1>0?p.ano:p.ano-1;
@@ -372,8 +374,8 @@ function viewStub(titulo){
 
 /* ===================== MODAL CADASTRO ===================== */
 function abrirCadastro(id){
-  if(id==null){ modalCad={id:null, nome:'', cargo_id:S.cargos[0]?.id, status:'Normal', regime:'CLT', salario:2499.50, minimo_garantido:0, adiantamento:true, beneficios:0, data_admissao:'', data_nascimento:'', codigo_contabil:'', vale_transporte:true}; }
-  else { const f=S.funcionarios.find(x=>x.id===id); modalCad={id:f.id, nome:f.nome, cargo_id:f.cargo_id, status:f.status, regime:f.regime, salario:f.salario, minimo_garantido:f.minimo_garantido, adiantamento:f.adiantamento, beneficios:f.beneficios, data_admissao:f.data_admissao||'', data_nascimento:f.data_nascimento||'', codigo_contabil:f.codigo_contabil||'', vale_transporte:f.vale_transporte!==false}; }
+  if(id==null){ modalCad={id:null, nome:'', cargo_id:S.cargos[0]?.id, status:'Normal', regime:'CLT', salario:2499.50, minimo_garantido:0, adiantamento:true, beneficios:0, data_admissao:'', data_nascimento:'', codigo_contabil:'', vale_transporte:true, jovem_aprendiz:false, participa_comissao:true, pontos_override:'', data_desligamento:''}; }
+  else { const f=S.funcionarios.find(x=>x.id===id); modalCad={id:f.id, nome:f.nome, cargo_id:f.cargo_id, status:f.status, regime:f.regime, salario:f.salario, minimo_garantido:f.minimo_garantido, adiantamento:f.adiantamento, beneficios:f.beneficios, data_admissao:f.data_admissao||'', data_nascimento:f.data_nascimento||'', codigo_contabil:f.codigo_contabil||'', vale_transporte:f.vale_transporte!==false, jovem_aprendiz:f.jovem_aprendiz===true, participa_comissao:f.participa_comissao!==false, pontos_override:(f.pontos_override!=null?f.pontos_override:''), data_desligamento:f.data_desligamento||''}; }
   paintModals();
 }
 function fecharModal(){ modalCad=null; paintModals(); }
@@ -382,6 +384,9 @@ async function salvarCadastro(){
     salario:+val('cad_salario')||0, minimo_garantido:+val('cad_minimo')||0, adiantamento:val('cad_adiantamento')==='sim', beneficios:+val('cad_beneficios')||0,
     data_admissao:val('cad_admissao')||null, data_nascimento:val('cad_nascimento')||null,
     codigo_contabil:val('cad_codcont').trim()||null, vale_transporte:val('cad_vt')==='sim',
+    jovem_aprendiz:val('cad_jovem')==='sim', participa_comissao:val('cad_participa')!=='nao',
+    pontos_override:(val('cad_pontos')!==''&&val('cad_pontos')!=null)?(+val('cad_pontos')):null,
+    data_desligamento:val('cad_deslig')||null,
     restaurante_id:S.restaurante.id };
   if(!d.nome){ alert('Informe o nome.'); return; }
   let err;
@@ -417,6 +422,14 @@ function modalHTML(){
         ${field('Salário (R$)', `<input id="cad_salario" type="number" step="0.01" value="${m.salario}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
         ${field('Mínimo garantido (R$)', `<input id="cad_minimo" type="number" step="0.01" value="${m.minimo_garantido}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
         ${field('Benefícios (R$)', `<input id="cad_beneficios" type="number" step="0.01" value="${m.beneficios}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
+        ${field('Pontos (manual — sobrescreve o cargo)', `<input id="cad_pontos" type="number" step="0.05" value="${m.pontos_override}" placeholder="${cargoById(m.cargo_id)?num(cargoById(m.cargo_id).pontos,2)+' (cargo)':'—'}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
+        ${field('Jovem aprendiz', `<select id="cad_jovem" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${opt([{value:'nao',label:'não'},{value:'sim',label:'sim'}], m.jovem_aprendiz?'sim':'nao')}</select>`)}
+        ${field('Participa da comissão', `<select id="cad_participa" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${opt([{value:'sim',label:'sim'},{value:'nao',label:'não'}], m.participa_comissao?'sim':'nao')}</select>`)}
+        ${field('Data de desligamento (demissão)', `<input id="cad_deslig" type="date" value="${m.data_desligamento||''}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">`)}
+        <div class="col-span-2 flex items-center justify-between gap-2 p-3 border border-slate-200 rounded">
+          <div class="text-sm text-slate-600"><i data-feather="pause-circle" class="w-4 h-4 inline text-amber-600"></i> Afastamentos (INSS, maternidade, etc.) ${m.id?`<span class="text-slate-400">— ${(S.afastamentos||[]).filter(a=>a.funcionario_id===m.id).length} registrado(s)</span>`:''}</div>
+          ${m.id?`<button type="button" onclick="abrirAfast(${m.id})" class="px-3 py-1.5 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Gerir afastamentos</button>`:'<span class="text-xs text-slate-400">salve o cadastro primeiro</span>'}
+        </div>
         <div class="col-span-2 p-3 bg-slate-50 rounded text-sm" id="cargoPreview"></div>
       </div>
       <div class="flex justify-end gap-2 px-6 py-4 border-t border-slate-200"><button onclick="fecharModal()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Cancelar</button><button onclick="salvarCadastro()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">${novo?'Cadastrar':'Salvar'}</button></div>
@@ -425,6 +438,41 @@ function modalHTML(){
 function previewCargo(){
   const c=cargoById(+val('cad_cargo')); const el=document.getElementById('cargoPreview');
   if(el&&c) el.innerHTML=`<span class="text-slate-500">Pontos-base:</span> <strong>${num(c.pontos,2)}</strong> <span class="text-slate-300">•</span> <span class="text-slate-500">Setor:</span> ${setorBadge(c.setores?.nome)}`;
+}
+
+/* ===================== AFASTAMENTOS (intervalo de datas) ===================== */
+let afastFuncId=null;
+async function recarregarAfast(){ const {data}=await sb.from('afastamento').select('*').eq('restaurante_id',S.restaurante.id); S.afastamentos=data||[]; }
+window.abrirAfast=function(fid){ afastFuncId=fid; paintModals(); };
+window.fecharAfast=function(){ afastFuncId=null; paintModals(); };
+window.addAfast=async function(){
+  const tipo=val('af_tipo'), ini=val('af_ini'), fim=val('af_fim'), obs=val('af_obs');
+  if(!ini||!fim||fim<ini){ alert('Informe datas válidas (início ≤ fim).'); return; }
+  const {error}=await sb.from('afastamento').insert({restaurante_id:S.restaurante.id, funcionario_id:afastFuncId, tipo, data_inicio:ini, data_fim:fim, obs:obs||null});
+  if(error){ alert('Erro: '+error.message); return; }
+  await recarregarAfast(); paintModals();
+};
+window.delAfast=async function(id){ if(!confirm('Excluir este afastamento?'))return; await sb.from('afastamento').delete().eq('id',id); await recarregarAfast(); paintModals(); };
+function afastModalHTML(){
+  if(afastFuncId==null) return '';
+  const f=S.funcionarios.find(x=>x.id===afastFuncId)||{}; const list=(S.afastamentos||[]).filter(a=>a.funcionario_id===afastFuncId).sort((a,b)=>b.data_inicio.localeCompare(a.data_inicio));
+  const TIPOS=[['inss','INSS'],['maternidade','Licença maternidade'],['acidente','Acidente de trabalho'],['outros','Outros']];
+  return `<div class="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-[60] p-4" onclick="if(event.target===this)fecharAfast()">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-lg">
+      <div class="flex items-center justify-between px-5 py-3 border-b border-slate-200"><h3 class="font-bold text-slate-900">Afastamentos · ${(f.nome||'').split(' ').slice(0,2).join(' ')}</h3><button onclick="fecharAfast()" class="text-slate-400 hover:text-slate-700"><i data-feather="x" class="w-5 h-5"></i></button></div>
+      <div class="p-5">
+        <p class="text-[11px] text-slate-500 mb-3">Nos dias dentro do afastamento a pessoa <strong>não participa da taxa de serviço</strong> (proporcional), sem precisar marcar dia a dia na folha de ponto.</p>
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">Tipo</label><select id="af_tipo" class="w-full px-2 py-2 border border-slate-200 rounded text-sm">${TIPOS.map(t=>`<option value="${t[0]}">${t[1]}</option>`).join('')}</select></div>
+          <div><label class="text-xs text-slate-500 block mb-1">Início</label><input id="af_ini" type="date" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+          <div><label class="text-xs text-slate-500 block mb-1">Fim</label><input id="af_fim" type="date" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+          <div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">Obs (opcional)</label><input id="af_obs" class="w-full px-2 py-2 border border-slate-200 rounded text-sm"></div>
+        </div>
+        <button onclick="addAfast()" class="w-full px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 mb-3">Adicionar afastamento</button>
+        <div class="border-t border-slate-100 pt-3 space-y-1">${list.length?list.map(a=>`<div class="flex items-center justify-between text-sm py-1.5 border-b border-slate-50"><span><span class="badge bg-amber-50 text-amber-700">${a.tipo}</span> ${a.data_inicio.split('-').reverse().join('/')} → ${a.data_fim.split('-').reverse().join('/')}${a.obs?` <span class="text-slate-400">· ${a.obs}</span>`:''}</span><button onclick="delAfast(${a.id})" class="text-slate-300 hover:text-red-500"><i data-feather="trash-2" class="w-4 h-4"></i></button></div>`).join(''):'<p class="text-sm text-slate-400">Nenhum afastamento registrado.</p>'}</div>
+      </div>
+      <div class="flex justify-end px-5 py-3 border-t border-slate-200"><button onclick="fecharAfast()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Fechar</button></div>
+    </div></div>`;
 }
 
 /* ===================== RENDER ===================== */
@@ -455,7 +503,8 @@ function modalsHTML(){
     + (typeof atribForm!=='undefined'&&atribForm?atribModalHTML():'')
     + (typeof esocialModal!=='undefined'&&esocialModal?esocialModalHTML():'')
     + (typeof escEdit!=='undefined'&&escEdit?escEditorHTML():'')
-    + (typeof pontoEdit!=='undefined'&&pontoEdit?viewPontoEditor():'');
+    + (typeof pontoEdit!=='undefined'&&pontoEdit?viewPontoEditor():'')
+    + (typeof afastFuncId!=='undefined'&&afastFuncId!=null?afastModalHTML():'');
 }
 function paintModals(){
   const host=document.getElementById('modalHost'); if(!host) return;
@@ -554,6 +603,9 @@ function agregaPonto(funcId){
   S.ponto.filter(p=>p.funcionario_id===funcId).forEach(p=>{ cnt[p.status]=(cnt[p.status]||0)+1; });
   return cnt;
 }
+// dias do período em afastamento (intervalo de datas) OU após a data de desligamento → não contam na comissão
+function diasAfastDeslig(f){ const p=S.periodoAtual; if(!p) return 0; const desl=f.data_desligamento; const afs=(S.afastamentos||[]).filter(a=>a.funcionario_id===f.id); if(!desl && !afs.length) return 0; let n=0; diasDoPeriodo(p).forEach(d=>{ const ds=ymdStr(d); let ex=false; if(desl && ds>desl) ex=true; if(!ex){ for(const a of afs){ if(ds>=a.data_inicio && ds<=a.data_fim){ ex=true; break; } } } if(ex)n++; }); return n; }
+function comEspecialVal(funcId){ const c=(S.comEspecial||[]).find(x=>x.funcionario_id===funcId); return c?Number(c.valor)||0:0; }
 function calcComissao(){
   const p=S.periodoAtual, cfg=S.config; if(!p||!cfg) return null;
   const dias=Number(p.dias_periodo)||16;
@@ -572,15 +624,19 @@ function calcComissao(){
   const bonusByFunc={}; S.rankingPeriodo.forEach(rp=>{ const prem=S.ranking.find(x=>x.colocacao===rp.colocacao); if(prem) bonusByFunc[rp.funcionario_id]=rankBucket*Number(prem.percentual)/100; });
 
   const rows=S.funcionarios.map(f=>{
-    const cg=f.cargos||{}; const base=Number(cg.pontos||0); const setor=cg.setores?.nome||'Outros';
+    const cg=f.cargos||{}; const setor=cg.setores?.nome||'Outros';
     const grupo=(cg.grupo_rateio==='salao')?'Salão':'Restante';
+    const naoParticipa = f.participa_comissao===false || f.jovem_aprendiz===true;   // fora do bolo (não recebe nem dilui)
+    const baseRaw = (f.pontos_override!=null && f.pontos_override!=='') ? Number(f.pontos_override) : Number(cg.pontos||0);  // pontos manuais sobrescrevem o cargo
+    const base = naoParticipa ? 0 : baseRaw;
     const c=agregaPonto(f.id); const falta=c.Falta,atraso=c.Atraso,adv=c['Advertência'],inativo=c.Inativo||0;
-    const diasTrab=Math.max(0,dias-falta-inativo);   // dias inativos não contam p/ comissão (proporcional)
+    const afast=diasAfastDeslig(f);   // afastamento (intervalo) + dias após desligamento
+    const diasTrab=naoParticipa?0:Math.max(0,dias-falta-inativo-afast);   // proporcional aos dias válidos
     const Z=(diasTrab/dias)*base;
     let desc=Z*(falta*Number(cfg.desconto_falta_pct)/100 + atraso*Number(cfg.desconto_atraso_pct)/100 + adv*Number(cfg.desconto_advertencia_pct)/100);
     desc=Math.min(desc,Z);
     let finais=Z-desc; if(finais>0&&finais<0.1)finais=0.1; if(diasTrab===0)finais=0;
-    return {f,setor,grupo,base,falta,atraso,adv,Z,desc,finais,recebeRepique:desc<=0, heMin:bancoFunc(f.id).pagar};
+    return {f,setor,grupo,base,falta,atraso,adv,afast,naoParticipa,Z,desc,finais,recebeRepique:desc<=0, heMin:bancoFunc(f.id).pagar, comEspecial:comEspecialVal(f.id)};
   });
   const somaZ={'Salão':0,'Restante':0},somaDesc={'Salão':0,'Restante':0},somaFinQ={'Salão':0,'Restante':0};
   rows.forEach(r=>{somaZ[r.grupo]+=r.Z;somaDesc[r.grupo]+=r.desc;if(r.recebeRepique)somaFinQ[r.grupo]+=r.finais;});
@@ -639,7 +695,7 @@ function calcComissao(){
     }
     r.comDentro=r.comissaoTotal*dentroPct;                      // vai pro holerite
     r.comFora=r.comissaoTotal*foraPct;                          // interno
-    r.totalPagar=(r.totalPagar||0)+r.extraDobra;               // extra/dobra entra na quinzena (por fora)
+    r.totalPagar=(r.totalPagar||0)+r.extraDobra+(r.comEspecial||0);   // extra/dobra + comissão especial (por fora, fora do holerite)
   });
   let outRows=rows;
   if(tipo==='rescisao' && p.funcionario_id) outRows=rows.filter(r=>r.f.id===p.funcionario_id);
@@ -697,16 +753,43 @@ window._viewComissao = function(){
         <div class="p-3 bg-blue-50 rounded"><p class="text-xs text-slate-500">Taxa Distribuída</p><p class="font-bold text-blue-700">${money(c.distribuida)}</p></div>
         <div class="p-3 bg-green-50 rounded"><p class="text-xs text-slate-500">Total em comissões</p><p class="font-bold text-green-700">${money(c.totalComissao)}</p></div>
       </div></div>`,'mb-4')
-  + card(`<div class="p-6"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="hash" class="w-4 h-4 text-blue-600"></i>R$ por ponto, por setor</h3>
-      <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-2 text-center text-sm">${S.setores.map(s=>`<div class="p-2 bg-slate-50 rounded"><p class="text-xs text-slate-500">${s.nome}</p><p class="font-bold text-slate-800">${money(c.rsPonto[s.nome])}</p></div>`).join('')}</div></div>`,'mb-4')
+  + card(`<div class="p-6"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="hash" class="w-4 h-4 text-blue-600"></i>R$ por ponto, por grupo</h3>
+      <div class="grid grid-cols-2 gap-2 text-center text-sm">${['Salão','Restante'].map(g=>`<div class="p-2 bg-slate-50 rounded"><p class="text-xs text-slate-500">${g} <span class="text-slate-400">(${g==='Salão'?num(S.config.rateio_salao_pct??53,0):num(S.config.rateio_restante_pct??42,0)}%)</span></p><p class="font-bold text-slate-800">${money(c.rsPonto[g])}</p></div>`).join('')}</div></div>`,'mb-4')
+  + comEspecialCard()
   + `<div class="flex justify-end gap-2 mb-3">
        <button onclick="exportComissaoCSV()" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>Exportar CSV</button>
        ${podeEscrever('comissao')?`<button onclick="salvarResultadoComissao()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="save" class="w-4 h-4"></i>Salvar fechamento</button>`:''}
      </div>`
   + tabelaComissao(c);
 };
+function comEspecialCard(){
+  const edit=podeEscrever('comissao'); const lista=(S.comEspecial||[]).slice().sort((a,b)=>((S.funcionarios.find(f=>f.id===a.funcionario_id)||{}).nome||'').localeCompare((S.funcionarios.find(f=>f.id===b.funcionario_id)||{}).nome||''));
+  const total=lista.reduce((a,x)=>a+Number(x.valor||0),0);
+  return card(`<div class="p-6"><h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="gift" class="w-4 h-4 text-purple-600"></i>Comissões especiais (por fora) <span class="badge bg-purple-100 text-purple-700">não entra no holerite</span></h3>
+      <p class="text-[11px] text-slate-400 mb-3">Valor manual por funcionário neste período (ex.: meta de eventos/vinhos). Pago <strong>por fora</strong>, somado ao total da pessoa — fora do holerite e fora do bolo da taxa.</p>
+      ${edit?`<div class="grid grid-cols-1 sm:grid-cols-12 gap-2 mb-3">
+        <select id="ce_func" class="sm:col-span-4 px-2 py-2 border border-slate-200 rounded text-sm"><option value="">— funcionário —</option>${S.funcionarios.map(f=>`<option value="${f.id}">${f.nome}</option>`).join('')}</select>
+        <input id="ce_valor" type="number" step="0.01" placeholder="Valor R$" class="sm:col-span-2 px-2 py-2 border border-slate-200 rounded text-sm text-right">
+        <input id="ce_desc" placeholder="Descrição (ex.: meta vinhos)" class="sm:col-span-4 px-2 py-2 border border-slate-200 rounded text-sm">
+        <button onclick="salvarComEspecial()" class="sm:col-span-2 px-3 py-2 bg-purple-600 text-white rounded text-sm font-medium hover:bg-purple-700">Salvar</button>
+      </div>`:''}
+      <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-2 py-2 text-left">Funcionário</th><th class="px-2 py-2 text-left">Descrição</th><th class="px-2 py-2 text-right">Valor</th>${edit?'<th></th>':''}</tr></thead><tbody>
+        ${lista.length?lista.map(x=>{const f=S.funcionarios.find(y=>y.id===x.funcionario_id)||{};return `<tr class="border-b border-slate-100"><td class="px-2 py-1.5 font-medium">${f.nome||'#'+x.funcionario_id}</td><td class="px-2 py-1.5 text-slate-500">${x.descricao||'—'}</td><td class="px-2 py-1.5 text-right font-semibold text-purple-700">${money(x.valor)}</td>${edit?`<td class="px-2 py-1.5 text-center"><button onclick="delComEspecial(${x.id})" class="text-slate-300 hover:text-red-500"><i data-feather="trash-2" class="w-3.5 h-3.5"></i></button></td>`:''}</tr>`;}).join(''):`<tr><td colspan="${edit?4:3}" class="text-center text-slate-400 py-4">Nenhuma comissão especial neste período.</td></tr>`}
+      </tbody>${lista.length?`<tfoot><tr class="bg-slate-50 font-bold"><td colspan="2" class="px-2 py-2 text-right">Total (por fora)</td><td class="px-2 py-2 text-right text-purple-700">${money(total)}</td>${edit?'<td></td>':''}</tr></tfoot>`:''}</table></div>
+    </div>`,'mb-4');
+}
+window.salvarComEspecial=async function(){
+  const fid=+val('ce_func')||null; const valor=+val('ce_valor')||0; const desc=(val('ce_desc')||'').trim()||null;
+  if(!fid){ alert('Escolha o funcionário.'); return; }
+  if(!S.periodoAtual){ alert('Selecione um período.'); return; }
+  const rec={restaurante_id:S.restaurante.id, funcionario_id:fid, periodo_id:S.periodoAtual.id, valor, descricao:desc};
+  const {error}=await sb.from('comissao_especial').upsert(rec,{onConflict:'funcionario_id,periodo_id'});
+  if(error){ alert('Erro: '+error.message); return; }
+  await carregarPonto(); render();
+};
+window.delComEspecial=async function(id){ if(!confirm('Remover esta comissão especial?'))return; await sb.from('comissao_especial').delete().eq('id',id); await carregarPonto(); render(); };
 function tabelaComissao(c){
-  const nome=r=>r.f.nome.split(' ').slice(0,2).join(' ');
+  const nome=r=>`${r.f.nome.split(' ').slice(0,2).join(' ')}${r.naoParticipa?` <span class="badge bg-slate-200 text-slate-500" style="font-size:9px" title="${r.f.jovem_aprendiz?'jovem aprendiz':'não participa'} — fora do bolo">fora</span>`:''}${r.afast>0?` <span class="badge bg-amber-100 text-amber-700" style="font-size:9px" title="${r.afast} dia(s) em afastamento/desligamento">afast ${r.afast}d</span>`:''}${r.comEspecial>0?` <span class="badge bg-purple-100 text-purple-700" style="font-size:9px" title="comissão especial por fora: ${money(r.comEspecial)}">+esp</span>`:''}`;
   const pts=r=>`<td class="px-2 py-2 text-center">${num(r.base,2)}</td><td class="px-2 py-2 text-center">${num(r.Z,2)}</td>
     <td class="px-2 py-2 text-center ${r.desc>0?'text-red-600 font-semibold':'text-slate-300'}">${r.desc>0?'−'+num(r.desc,2):'—'}</td>
     <td class="px-2 py-2 text-center font-semibold">${num(r.finais,2)}</td>`;
