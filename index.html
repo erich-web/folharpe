@@ -623,7 +623,8 @@ function calcComissao(){
   const rankBucket=distribuida*rankingPct/100;
   const bonusByFunc={}; S.rankingPeriodo.forEach(rp=>{ const prem=S.ranking.find(x=>x.colocacao===rp.colocacao); if(prem) bonusByFunc[rp.funcionario_id]=rankBucket*Number(prem.percentual)/100; });
 
-  const rows=S.funcionarios.map(f=>{
+  // demitido ANTES do início do período não entra na folha (sem salário); exceção: a própria rescisão dele
+  const rows=S.funcionarios.filter(f=> !(f.data_desligamento && f.data_desligamento < p.data_inicio && f.id !== p.funcionario_id)).map(f=>{
     const cg=f.cargos||{}; const setor=cg.setores?.nome||'Outros';
     const grupo=(cg.grupo_rateio==='salao')?'Salão':'Restante';
     const naoParticipa = f.participa_comissao===false || f.jovem_aprendiz===true;   // fora do bolo (não recebe nem dilui)
