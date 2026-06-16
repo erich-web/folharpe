@@ -109,11 +109,13 @@ function traduzErro(m){
 async function carregarDados(){
   S.loading=true; render();
   try{
-    const r = await sb.from('restaurantes').select('*').order('id').limit(1).single();
-    S.restaurante = r.data;
+    const rests = await sb.from('restaurantes').select('*').order('id');
+    S.restaurantes = rests.data||[];
+    S.restaurante = S.restaurantes.find(x=>x.id===S.restauranteAtivoId) || S.restaurantes[0] || null;
+    S.restauranteAtivoId = S.restaurante?.id;
     const rid = S.restaurante?.id;
     const [cfg, set, car, fun, rat, rank, cic, per, sol, pag, afast, fat] = await Promise.all([
-      sb.from('config_remuneracao').select('*').eq('restaurante_id',rid).single(),
+      sb.from('config_remuneracao').select('*').eq('restaurante_id',rid).maybeSingle(),
       sb.from('setores').select('*').eq('restaurante_id',rid).order('ordem'),
       sb.from('cargos').select('*, setores(nome)').eq('restaurante_id',rid).order('pontos',{ascending:false}),
       sb.from('funcionarios').select('*, cargos(nome,pontos,setor_id,grupo_rateio,setores(nome))').eq('restaurante_id',rid).order('nome'),
@@ -162,6 +164,29 @@ async function selectPeriodo(id){
   S.periodoAtual=S.periodos.find(p=>p.id===+id)||null;
   await carregarPonto(); render();
 }
+window.trocarRestaurante=async function(id){
+  if(+id===S.restauranteAtivoId) return;
+  S.restauranteAtivoId=+id; S.periodoAtual=null; S.ponto=[]; S.comEspecial=[]; S.rankingPeriodo=[];
+  await carregarDados(); render();
+};
+window.novoRestaurante=async function(){
+  if(papel()!=='admin'){ alert('Apenas administradores podem criar um restaurante.'); return; }
+  const nome=prompt('Nome do novo restaurante:'); if(!nome||!nome.trim()) return;
+  const { data:novo, error:e1 }=await sb.from('restaurantes').insert({nome:nome.trim()}).select('id').single();
+  if(e1){ alert('Erro ao criar restaurante: '+e1.message); return; }
+  const b=S.config||{};
+  const cfg={ restaurante_id:novo.id,
+    desconto_falta_pct:b.desconto_falta_pct??10, desconto_atraso_pct:b.desconto_atraso_pct??5, desconto_advertencia_pct:b.desconto_advertencia_pct??5,
+    valor_dobra:b.valor_dobra??150, valor_extra_diaria:b.valor_extra_diaria??120, holerite_dentro_pct:b.holerite_dentro_pct??40, holerite_fora_pct:b.holerite_fora_pct??60,
+    desc_extras_pct:b.desc_extras_pct??100, limite_he_dia_horas:b.limite_he_dia_horas??2, retencao_casa_pct:b.retencao_casa_pct??33, horas_mes_base:b.horas_mes_base??220,
+    adicional_he_pct:b.adicional_he_pct??50, adiantamento_pct:b.adiantamento_pct??40, adicional_noturno_pct:b.adicional_noturno_pct??50,
+    rateio_salao_pct:b.rateio_salao_pct??53, rateio_restante_pct:b.rateio_restante_pct??42, rateio_ranking_pct:b.rateio_ranking_pct??5, encargos_pct:b.encargos_pct??0 };
+  const { error:e2 }=await sb.from('config_remuneracao').insert(cfg);
+  if(e2){ alert('Restaurante criado, mas a configuração base falhou: '+e2.message+'\nAjuste em Configurações.'); }
+  S.restauranteAtivoId=novo.id; S.periodoAtual=null; S.ponto=[]; S.comEspecial=[]; S.rankingPeriodo=[]; current='cadastro';
+  await carregarDados(); render();
+  alert('Restaurante "'+nome.trim()+'" criado! Agora configure os setores, cargos (com a pontuação da operação) e as premissas em Configurações.');
+};
 function diasEntre(ini,fim){ return Math.round((stripT(new Date(fim+'T00:00:00'))-stripT(new Date(ini+'T00:00:00')))/86400000)+1; }
 function ymdStr(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function mesesTrabalhados(dataAdm, ano){
@@ -243,6 +268,7 @@ async function salvarCampoPeriodo(campo,valor){
 const PAGES=[
   {id:'dashboard',label:'Dashboard',icon:'grid'},
   {id:'cadastro',label:'Cadastro',icon:'users'},
+  {id:'estrutura',label:'Cargos & Setores',icon:'tag'},
   {id:'config',label:'Configurações',icon:'sliders'},
   {id:'ponto',label:'Folha de Ponto',icon:'calendar'},
   {id:'escala',label:'Escala',icon:'grid',beta:true},
@@ -253,8 +279,8 @@ const PAGES=[
   {id:'relatorios',label:'Relatórios',icon:'bar-chart-2'},
   {id:'usuarios',label:'Usuários',icon:'shield'},
 ];
-const ACESSO={ admin:['dashboard','cadastro','config','ponto','escala','extras','comissao','ranking','holerite','relatorios','usuarios'],
-  rh:['dashboard','cadastro','ponto','escala','extras','comissao','ranking','holerite','relatorios'],
+const ACESSO={ admin:['dashboard','cadastro','estrutura','config','ponto','escala','extras','comissao','ranking','holerite','relatorios','usuarios'],
+  rh:['dashboard','cadastro','estrutura','ponto','escala','extras','comissao','ranking','holerite','relatorios'],
   lider:['dashboard','ponto','escala','relatorios'],
   gerente:['dashboard','escala','relatorios'],
   viewer:['dashboard','comissao','relatorios'] };
@@ -298,9 +324,10 @@ function appShell(content){
     ${menuOpen?`<div onclick="toggleMenu()" class="fixed inset-0 bg-slate-900/40 z-30 md:hidden"></div>`:''}
     <aside class="fixed md:static inset-y-0 left-0 z-40 w-64 bg-white border-r border-slate-200 flex flex-col shrink-0 transform ${menuOpen?'translate-x-0':'-translate-x-full'} md:translate-x-0 transition-transform">
       <div class="p-6 border-b border-slate-200 flex items-center justify-between"><div class="flex items-center gap-3">
-        <div class="w-10 h-10 bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg flex items-center justify-center"><span class="text-white font-bold text-lg">A</span></div>
+        <div class="w-10 h-10 bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg flex items-center justify-center"><span class="text-white font-bold text-lg">${(S.restaurante?.nome||'A').charAt(0).toUpperCase()}</span></div>
         <div><h1 class="font-bold text-slate-900 leading-tight">${S.restaurante?.nome||'Amauri'}</h1><p class="text-xs text-slate-500">Comissão Pro</p></div>
       </div><button onclick="toggleMenu()" class="md:hidden text-slate-400"><i data-feather="x" class="w-5 h-5"></i></button></div>
+      ${papel()==='admin'&&(S.restaurantes||[]).length?`<div class="px-4 pt-3 pb-1"><label class="text-[10px] uppercase tracking-wide text-slate-400 block mb-1 flex items-center gap-1"><i data-feather="home" class="w-3 h-3"></i>Restaurante</label><div class="flex gap-1"><select onchange="trocarRestaurante(this.value)" class="flex-1 px-2 py-2 border border-slate-200 rounded text-sm font-medium">${S.restaurantes.map(r=>`<option value="${r.id}" ${r.id===S.restauranteAtivoId?'selected':''}>${r.nome}</option>`).join('')}</select><button onclick="novoRestaurante()" title="Novo restaurante" class="px-2 py-2 border border-slate-200 rounded text-slate-500 hover:bg-slate-100"><i data-feather="plus" class="w-4 h-4"></i></button></div></div>`:''}
       <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">${PAGES.filter(p=>podeVer(p.id)).map(p=>`
         <button onclick="go('${p.id}')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left text-slate-700 hover:bg-slate-100 transition ${current===p.id?'nav-active text-blue-700 font-semibold':''}">
           <i data-feather="${p.icon}" class="w-4 h-4"></i><span class="text-sm font-medium">${p.label}</span>${p.beta?'<span class="badge bg-purple-100 text-purple-700 text-[9px] ml-auto">BETA</span>':''}</button>`).join('')}
@@ -314,7 +341,7 @@ function appShell(content){
     <div class="flex-1 flex flex-col overflow-hidden">
       <header class="md:hidden flex items-center gap-3 px-4 py-3 bg-white border-b border-slate-200 shrink-0">
         <button onclick="toggleMenu()" class="text-slate-600"><i data-feather="menu" class="w-6 h-6"></i></button>
-        <div class="flex items-center gap-2"><div class="w-7 h-7 bg-gradient-to-br from-blue-600 to-blue-700 rounded flex items-center justify-center"><span class="text-white font-bold text-sm">A</span></div><span class="font-bold text-slate-900">${S.restaurante?.nome||'Amauri'}</span></div>
+        <div class="flex items-center gap-2"><div class="w-7 h-7 bg-gradient-to-br from-blue-600 to-blue-700 rounded flex items-center justify-center"><span class="text-white font-bold text-sm">${(S.restaurante?.nome||'A').charAt(0).toUpperCase()}</span></div><span class="font-bold text-slate-900">${S.restaurante?.nome||'Amauri'}</span></div>
       </header>
       <main class="flex-1 overflow-auto"><div class="p-4 md:p-8 max-w-[1400px] mx-auto animate-fade">${content}</div></main>
     </div>
@@ -422,6 +449,46 @@ function linhaCad(f){
   </tr>`;
 }
 function filtrarCad(q){ q=(q||'').toLowerCase(); document.querySelectorAll('.cadrow').forEach(r=>{ r.style.display=r.dataset.n.includes(q)?'':'none'; }); }
+
+/* ===================== CARGOS & SETORES ===================== */
+function viewEstrutura(){
+  const edit=podeEscrever('estrutura');
+  const setoresCard=card(`<div class="p-6"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="layers" class="w-4 h-4 text-blue-600"></i>Setores</h3>
+    ${edit?`<div class="flex gap-2 mb-3"><input id="ns_nome" placeholder="Novo setor" class="flex-1 px-3 py-2 border border-slate-200 rounded text-sm" onkeydown="if(event.key==='Enter')addSetor()"><button onclick="addSetor()" class="px-3 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">+ Setor</button></div>`:''}
+    <div class="space-y-1">${S.setores.length?S.setores.map(s=>`<div class="flex items-center gap-2 p-2 border border-slate-100 rounded">
+        ${edit?`<input value="${(s.nome||'').replace(/"/g,'&quot;')}" onchange="salvarSetorNome(${s.id},this.value)" class="flex-1 px-2 py-1 border border-slate-200 rounded text-sm">`:`<span class="flex-1 text-sm">${s.nome}</span>`}
+        <span class="text-xs text-slate-400 whitespace-nowrap">${S.cargos.filter(c=>c.setor_id===s.id).length} cargos</span>
+        ${edit?`<button onclick="excluirSetor(${s.id})" class="text-slate-300 hover:text-red-500" title="excluir setor"><i data-feather="trash-2" class="w-4 h-4"></i></button>`:''}
+      </div>`).join(''):'<p class="text-sm text-slate-400">Nenhum setor. Adicione acima.</p>'}</div></div>`);
+  const cargos=S.cargos.slice().sort((a,b)=>(a.setores?.nome||'').localeCompare(b.setores?.nome||'')||(Number(b.pontos)-Number(a.pontos)));
+  const cargosCard=card(`<div class="p-6"><div class="flex items-center justify-between mb-3"><h3 class="font-bold flex items-center gap-2"><i data-feather="tag" class="w-4 h-4 text-blue-600"></i>Cargos e pontos</h3>${edit?`<button onclick="abrirCargo(null)" class="px-3 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 flex items-center gap-1"><i data-feather="plus" class="w-4 h-4"></i>Novo cargo</button>`:''}</div>
+    <div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-3 py-2 text-left">Cargo</th><th class="px-3 py-2 text-left">Setor</th><th class="px-3 py-2 text-center">Pontos</th><th class="px-3 py-2 text-center">Grupo rateio</th>${edit?'<th></th>':''}</tr></thead><tbody>
+      ${cargos.length?cargos.map(c=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40"><td class="px-3 py-2 font-medium">${c.nome}</td><td class="px-3 py-2">${setorBadge(c.setores?.nome)}</td><td class="px-3 py-2 text-center font-semibold">${num(c.pontos,2)}</td><td class="px-3 py-2 text-center"><span class="badge ${c.grupo_rateio==='salao'?'bg-blue-100 text-blue-700':'bg-slate-100 text-slate-600'}">${c.grupo_rateio==='salao'?'Salão':'Restante'}</span></td>${edit?`<td class="px-3 py-2 text-right whitespace-nowrap"><button onclick="abrirCargo(${c.id})" class="text-blue-600 hover:underline text-xs">Editar</button> <button onclick="excluirCargo(${c.id})" class="text-red-500 hover:underline text-xs ml-2">Excluir</button></td>`:''}</tr>`).join(''):`<tr><td colspan="${edit?5:4}" class="text-center text-slate-400 py-6">Nenhum cargo cadastrado.</td></tr>`}
+    </tbody></table></div></div>`);
+  return pageHeader('Cargos & Setores', `${S.restaurante?.nome||''} · ${S.cargos.length} cargos, ${S.setores.length} setores`)
+    + `<div class="grid grid-cols-1 lg:grid-cols-3 gap-4"><div class="lg:col-span-1">${setoresCard}</div><div class="lg:col-span-2">${cargosCard}</div></div>`;
+}
+window.addSetor=async function(){ const nome=(val('ns_nome')||'').trim(); if(!nome){ alert('Informe o nome do setor.'); return; } const ordem=(S.setores.length?Math.max(...S.setores.map(s=>Number(s.ordem)||0)):0)+1; const {error}=await sb.from('setores').insert({restaurante_id:S.restaurante.id,nome,ordem}); if(error){ alert('Erro: '+error.message); return; } await carregarDados(); render(); };
+window.salvarSetorNome=async function(id,nome){ nome=(nome||'').trim(); if(!nome)return; const {error}=await sb.from('setores').update({nome}).eq('id',id); if(error){ alert('Erro: '+error.message); return; } const s=S.setores.find(x=>x.id===id); if(s)s.nome=nome; };
+window.excluirSetor=async function(id){ if(!confirm('Excluir este setor?'))return; const {error}=await sb.from('setores').delete().eq('id',id); if(error){ alert('Não foi possível excluir — provavelmente há cargos neste setor. ('+error.message+')'); return; } await carregarDados(); render(); };
+let cargoModal=null;
+window.abrirCargo=function(id){ if(id==null){ cargoModal={id:null, nome:'', setor_id:S.setores[0]?.id, pontos:0, grupo_rateio:'restante'}; } else { const c=S.cargos.find(x=>x.id===id); cargoModal={id:c.id, nome:c.nome, setor_id:c.setor_id, pontos:c.pontos, grupo_rateio:c.grupo_rateio||'restante'}; } paintModals(); };
+window.fecharCargo=function(){ cargoModal=null; paintModals(); };
+window.salvarCargo=async function(){ const d={ restaurante_id:S.restaurante.id, nome:(val('cg_nome')||'').trim(), setor_id:+val('cg_setor')||null, pontos:+val('cg_pontos')||0, grupo_rateio:val('cg_grupo') }; if(!d.nome){ alert('Informe o nome do cargo.'); return; } let err; if(cargoModal.id==null){ ({error:err}=await sb.from('cargos').insert(d)); } else { ({error:err}=await sb.from('cargos').update(d).eq('id',cargoModal.id)); } if(err){ alert('Erro: '+err.message); return; } cargoModal=null; await carregarDados(); render(); };
+window.excluirCargo=async function(id){ if(!confirm('Excluir este cargo?'))return; const {error}=await sb.from('cargos').delete().eq('id',id); if(error){ alert('Não foi possível excluir — provavelmente há funcionários neste cargo. ('+error.message+')'); return; } await carregarDados(); render(); };
+function cargoModalHTML(){ if(typeof cargoModal==='undefined'||!cargoModal)return ''; const m=cargoModal, novo=m.id==null;
+  return `<div class="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)fecharCargo()">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-md">
+      <div class="flex items-center justify-between px-5 py-3 border-b border-slate-200"><h3 class="font-bold text-slate-900">${novo?'Novo cargo':'Editar cargo'}</h3><button onclick="fecharCargo()" class="text-slate-400 hover:text-slate-700"><i data-feather="x" class="w-5 h-5"></i></button></div>
+      <div class="p-5 grid grid-cols-2 gap-3">
+        <div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">Nome do cargo</label><input id="cg_nome" value="${(m.nome||'').replace(/"/g,'&quot;')}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Setor</label><select id="cg_setor" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${S.setores.map(s=>`<option value="${s.id}" ${s.id===m.setor_id?'selected':''}>${s.nome}</option>`).join('')||'<option value="">— crie um setor antes —</option>'}</select></div>
+        <div><label class="text-xs text-slate-500 block mb-1">Pontos</label><input id="cg_pontos" type="number" step="0.05" value="${m.pontos}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
+        <div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">Grupo de rateio (Salão recebe % próprio; demais = Restante)</label><select id="cg_grupo" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"><option value="salao" ${m.grupo_rateio==='salao'?'selected':''}>Salão</option><option value="restante" ${m.grupo_rateio!=='salao'?'selected':''}>Restante</option></select></div>
+      </div>
+      <div class="flex justify-end gap-2 px-5 py-3 border-t border-slate-200"><button onclick="fecharCargo()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Cancelar</button><button onclick="salvarCargo()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">${novo?'Cadastrar':'Salvar'}</button></div>
+    </div></div>`;
+}
 
 function viewStub(titulo){
   return pageHeader(titulo,'Em construção')
@@ -538,7 +605,7 @@ function render(){
   if(S.loading && !S.restaurante){ root.innerHTML=`<div class="min-h-screen flex items-center justify-center text-slate-400">Carregando…</div>`; feather.replace(); return; }
   if(!podeVer(current)) current='dashboard';
   const wv = id => window['_view'+id];
-  const views={dashboard:viewDashboard,cadastro:viewCadastro,config:()=>viewConfig(),
+  const views={dashboard:viewDashboard,cadastro:viewCadastro,estrutura:()=>viewEstrutura(),config:()=>viewConfig(),
     ponto:()=>(wv('Ponto')?wv('Ponto')():viewStub('Folha de Ponto')),
     escala:()=>(wv('Escala')?wv('Escala')():viewStub('Escala')),
     extras:()=>(wv('Extras')?wv('Extras')():viewStub('Extras')),
@@ -561,7 +628,8 @@ function modalsHTML(){
     + (typeof esocialModal!=='undefined'&&esocialModal?esocialModalHTML():'')
     + (typeof escEdit!=='undefined'&&escEdit?escEditorHTML():'')
     + (typeof pontoEdit!=='undefined'&&pontoEdit?viewPontoEditor():'')
-    + (typeof afastFuncId!=='undefined'&&afastFuncId!=null?afastModalHTML():'');
+    + (typeof afastFuncId!=='undefined'&&afastFuncId!=null?afastModalHTML():'')
+    + (typeof cargoModal!=='undefined'&&cargoModal?cargoModalHTML():'');
 }
 function paintModals(){
   const host=document.getElementById('modalHost'); if(!host) return;
