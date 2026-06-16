@@ -10,6 +10,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   *{scroll-behavior:smooth}
@@ -111,7 +112,7 @@ async function carregarDados(){
     const r = await sb.from('restaurantes').select('*').order('id').limit(1).single();
     S.restaurante = r.data;
     const rid = S.restaurante?.id;
-    const [cfg, set, car, fun, rat, rank, cic, per, sol, pag, afast] = await Promise.all([
+    const [cfg, set, car, fun, rat, rank, cic, per, sol, pag, afast, fat] = await Promise.all([
       sb.from('config_remuneracao').select('*').eq('restaurante_id',rid).single(),
       sb.from('setores').select('*').eq('restaurante_id',rid).order('ordem'),
       sb.from('cargos').select('*, setores(nome)').eq('restaurante_id',rid).order('pontos',{ascending:false}),
@@ -123,10 +124,11 @@ async function carregarDados(){
       sb.from('solicitacoes_extra').select('*, setores(nome), funcionarios(nome)').eq('restaurante_id',rid).order('data',{ascending:false}),
       sb.from('pagamentos').select('*, periodos(data_inicio,data_fim,ano)').eq('restaurante_id',rid).order('data_pagamento',{ascending:false}),
       sb.from('afastamento').select('*').eq('restaurante_id',rid),
+      sb.from('faturamento').select('*').eq('restaurante_id',rid).order('semana_inicio',{ascending:false}),
     ]);
     S.config=cfg.data; S.setores=set.data||[]; S.cargos=car.data||[]; S.funcionarios=fun.data||[];
     S.rateio=rat.data||[]; S.ranking=rank.data||[]; S.ciclos=cic.data||[];
-    S.periodos=per.data||[]; S.solicitacoes=sol.data||[]; S.pagamentos=pag.data||[]; S.afastamentos=afast.data||[];
+    S.periodos=per.data||[]; S.solicitacoes=sol.data||[]; S.pagamentos=pag.data||[]; S.afastamentos=afast.data||[]; S.faturamento=fat.data||[];
     const prof=await sb.from('profiles').select('*').eq('id',S.session.user.id).single(); S.perfil=prof.data;
     if(S.perfil?.papel==='admin'){ const us=await sb.from('profiles').select('*').order('email'); S.usuarios=us.data||[]; }
     if(!S.periodoAtual && S.periodos.length) S.periodoAtual=S.periodos[0];
@@ -335,12 +337,66 @@ function viewDashboard(){
     ['CARGOS', S.cargos.length, 'na tabela de pontos','text-slate-900'],
     ['CICLOS DE PAGAMENTO', S.ciclos.length, 'configurados','text-green-600'],
   ];
+  const serie=dashMensal(); const ult=serie.filter(m=>m.cmo!=null).slice(-1)[0]||serie.slice(-1)[0]||null;
+  const cmoCor = ult&&ult.cmo!=null ? (ult.cmo<=35?'text-green-600':ult.cmo<=45?'text-amber-600':'text-rose-600') : 'text-slate-400';
+  const kpisFin=[
+    ['% CMO (mês)', ult&&ult.cmo!=null?num(ult.cmo,1)+'%':'—', ult?'mão de obra ÷ faturamento · '+mesLbl(ult.k):'sem faturamento lançado', cmoCor],
+    ['FOLHA (mês)', ult?money(ult.folha):'—', 'inclui extras/dobras','text-slate-900'],
+    ['EXTRAS/DOBRAS (mês)', ult?money(ult.extras):'—', 'provisionados','text-purple-600'],
+    ['ENCARGOS (mês)', ult?money(ult.encargos):'—', `${num(S.config?.encargos_pct||0,0)}% da folha`,'text-slate-900'],
+  ];
+  const edFat=['admin','rh'].includes(S.perfil?.papel);
+  const fatRecent=(S.faturamento||[]).slice(0,8);
+  const faturCard=card(`<div class="p-6"><h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="dollar-sign" class="w-4 h-4 text-green-600"></i>Faturamento bruto (semanal)</h3>
+      <p class="text-[11px] text-slate-400 mb-3">Lance o faturamento de cada semana. O CMO usa o total do mês (soma das semanas).</p>
+      ${edFat?`<div class="flex flex-wrap items-end gap-2 mb-3">
+        <div><label class="text-[10px] text-slate-500 block">Semana (início)</label><input id="fat_sem" type="date" class="px-2 py-1.5 border border-slate-200 rounded text-sm"></div>
+        <div><label class="text-[10px] text-slate-500 block">Valor (R$)</label><input id="fat_val" type="number" step="0.01" class="px-2 py-1.5 border border-slate-200 rounded text-sm text-right w-36"></div>
+        <button onclick="salvarFaturamento()" class="px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700">Salvar</button>
+      </div>`:''}
+      <div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="px-2 py-1.5 text-left">Semana</th><th class="px-2 py-1.5 text-right">Faturamento</th>${edFat?'<th></th>':''}</tr></thead><tbody>
+        ${fatRecent.length?fatRecent.map(f=>`<tr class="border-b border-slate-100"><td class="px-2 py-1.5">${f.semana_inicio.split('-').reverse().join('/')}</td><td class="px-2 py-1.5 text-right font-semibold">${money(f.valor)}</td>${edFat?`<td class="px-2 py-1.5 text-center"><button onclick="delFaturamento(${f.id})" class="text-slate-300 hover:text-red-500"><i data-feather="trash-2" class="w-3.5 h-3.5"></i></button></td>`:''}</tr>`).join(''):`<tr><td colspan="${edFat?3:2}" class="text-center text-slate-400 py-3">Nenhum faturamento lançado ainda.</td></tr>`}
+      </tbody></table></div></div>`);
+  const chartCard=card(`<div class="p-6"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="trending-up" class="w-4 h-4 text-blue-600"></i>Custos com pessoal — mês a mês</h3>
+      ${serie.length?`<div style="height:300px"><canvas id="dashChart"></canvas></div>`:'<p class="text-sm text-slate-400 py-8 text-center">Sem dados ainda. Salve fechamentos na Comissão e lance o faturamento para alimentar o gráfico.</p>'}</div>`,'mb-4');
   return pageHeader('Dashboard', `Bem-vindo · ${S.restaurante?.nome||''}`)
     + proximo
-    + `<div class="grid grid-cols-2 md:grid-cols-4 gap-4">${kpis.map(k=>card(`<div class="p-6"><p class="text-xs text-slate-500 font-semibold mb-2">${k[0]}</p><p class="text-2xl font-bold ${k[3]}">${k[1]}</p><p class="text-xs text-slate-400 mt-2">${k[2]}</p></div>`)).join('')}</div>`
-    + `<div class="mt-4">${card(`<div class="p-6"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="info" class="w-4 h-4 text-blue-600"></i>Status do sistema</h3>
-        <p class="text-sm text-slate-600">Banco de dados conectado ao Supabase. Cadastro e Configurações já gravam direto no banco. As telas de Ponto, Extras, Comissão e Ranking serão ligadas na sequência.</p></div>`)}</div>`;
+    + `<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">${kpisFin.map(k=>card(`<div class="p-5"><p class="text-xs text-slate-500 font-semibold mb-1">${k[0]}</p><p class="text-2xl font-bold ${k[3]}">${k[1]}</p><p class="text-xs text-slate-400 mt-1">${k[2]}</p></div>`)).join('')}</div>`
+    + chartCard
+    + faturCard
+    + `<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">${kpis.map(k=>card(`<div class="p-5"><p class="text-xs text-slate-500 font-semibold mb-1">${k[0]}</p><p class="text-xl font-bold ${k[3]}">${k[1]}</p><p class="text-xs text-slate-400 mt-1">${k[2]}</p></div>`)).join('')}</div>`;
 }
+function mesLbl(k){ const [a,m]=k.split('-'); return (MESES_F[(+m)-1]||'').slice(0,3)+'/'+a.slice(2); }
+function dashMensal(){
+  const meses={}; const get=k=>(meses[k]=meses[k]||{folha:0,extras:0,fat:0});
+  (S.pagamentos||[]).forEach(pg=>{ const per=S.periodos.find(x=>x.id===pg.periodo_id); if(!per)return; const k=`${per.ano}-${String(per.mes).padStart(2,'0')}`; get(k).folha+=Number(pg.total_folha)||0; });
+  (S.solicitacoes||[]).forEach(s=>{ if(!s.provisionado||!s.data)return; const k=s.data.slice(0,7); get(k).extras+=custoUnit(s); });
+  (S.faturamento||[]).forEach(f=>{ if(!f.semana_inicio)return; const k=f.semana_inicio.slice(0,7); get(k).fat+=Number(f.valor)||0; });
+  const encPct=Number(S.config?.encargos_pct)||0;
+  return Object.keys(meses).sort().map(k=>{ const m=meses[k]; const enc=m.folha*encPct/100; const cmo=m.fat>0?((m.folha+enc)/m.fat*100):null; return {k,folha:m.folha,extras:m.extras,encargos:enc,fat:m.fat,cmo}; });
+}
+let dashChartInst=null;
+function renderDashChart(){
+  const el=document.getElementById('dashChart'); if(!el||!window.Chart) return;
+  const s=dashMensal(); if(!s.length) return;
+  if(dashChartInst){ dashChartInst.destroy(); dashChartInst=null; }
+  dashChartInst=new Chart(el,{ type:'line', data:{ labels:s.map(m=>mesLbl(m.k)), datasets:[
+      {label:'Folha', data:s.map(m=>Math.round(m.folha)), borderColor:'#2563eb', backgroundColor:'#2563eb22', tension:.3},
+      {label:'Extras/Dobras', data:s.map(m=>Math.round(m.extras)), borderColor:'#9333ea', backgroundColor:'#9333ea22', tension:.3},
+      {label:'Encargos', data:s.map(m=>Math.round(m.encargos)), borderColor:'#f59e0b', backgroundColor:'#f59e0b22', tension:.3},
+    ]},
+    options:{ responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
+      plugins:{ legend:{position:'bottom'}, tooltip:{ callbacks:{ label:c=>c.dataset.label+': R$ '+Number(c.raw).toLocaleString('pt-BR') } } },
+      scales:{ y:{ ticks:{ callback:v=>'R$ '+(v/1000)+'k' } } } } });
+}
+window.salvarFaturamento=async function(){
+  const sem=val('fat_sem'); const v=+val('fat_val')||0;
+  if(!sem){ alert('Informe a semana (data de início).'); return; }
+  const {error}=await sb.from('faturamento').upsert({restaurante_id:S.restaurante.id, semana_inicio:sem, valor:v},{onConflict:'restaurante_id,semana_inicio'});
+  if(error){ alert('Erro: '+error.message); return; }
+  await carregarDados(); render();
+};
+window.delFaturamento=async function(id){ if(!confirm('Remover este faturamento?'))return; await sb.from('faturamento').delete().eq('id',id); await carregarDados(); render(); };
 
 function viewCadastro(){
   return pageHeader('Cadastro de Funcionários', `${S.funcionarios.length} colaboradores`)
@@ -496,6 +552,7 @@ function render(){
   document.getElementById('modalHost').innerHTML=modalsHTML();
   feather.replace();
   if(modalCad) previewCargo();
+  if(current==='dashboard' && typeof renderDashChart==='function'){ try{ renderDashChart(); }catch(e){} }
 }
 // Todos os modais vivem num host separado do conteúdo; abrir/fechar atualiza só o host (sem reconstruir a página).
 function modalsHTML(){
@@ -541,6 +598,7 @@ window._viewConfig = function(){
       ${f('Horas-mês (base p/ valor-hora)', numInput('cf_horasmes', cfg.horas_mes_base??220,'h'))}
       ${f('Adicional de HE', numInput('cf_adiche', cfg.adicional_he_pct??50,'%'))}
       ${f('Adicional noturno', numInput('cf_adicnot', cfg.adicional_noturno_pct??50,'%'))}
+      ${f('Encargos (% sobre a folha)', numInput('cf_encargos', cfg.encargos_pct??0,'%'))}
       ${f('Adiantamento (% do salário)', numInput('cf_adiantpct', cfg.adiantamento_pct??40,'%'))}
     </div>`)
   + (()=>{ const ps=Number(cfg.rateio_salao_pct??53),pr=Number(cfg.rateio_restante_pct??42),pk=Number(cfg.rateio_ranking_pct??5); const soma=ps+pr+pk;
@@ -582,7 +640,7 @@ window.salvarConfig = async function(){
     valor_dobra:v('cf_dobra'), valor_extra_diaria:v('cf_extra'), retencao_casa_pct:v('cf_retencao'),
     holerite_dentro_pct:dentro, holerite_fora_pct:100-dentro, desc_extras_pct:v('cf_descextras'), limite_he_dia_horas:v('cf_he'),
     horas_mes_base:v('cf_horasmes')||220, adicional_he_pct:v('cf_adiche'), adicional_noturno_pct:v('cf_adicnot')||50, adiantamento_pct:v('cf_adiantpct')||40,
-    rateio_salao_pct:v('cf_ratsalao'), rateio_restante_pct:v('cf_ratrestante'), rateio_ranking_pct:v('cf_ratranking'), updated_at:new Date().toISOString() };
+    rateio_salao_pct:v('cf_ratsalao'), rateio_restante_pct:v('cf_ratrestante'), rateio_ranking_pct:v('cf_ratranking'), encargos_pct:v('cf_encargos'), updated_at:new Date().toISOString() };
   let e1=(await sb.from('config_remuneracao').update(upd).eq('id',S.config.id)).error;
   // ranking premio
   for(const r of S.ranking){ await sb.from('ranking_premio').update({percentual:v('rk_'+r.id)}).eq('id',r.id); }
