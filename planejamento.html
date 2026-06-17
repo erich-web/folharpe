@@ -115,7 +115,7 @@ window.salvarSistema=async function(btn){ if(btn){btn.disabled=true;btn.textCont
 
 /* ---- modo PREMISSA (editar) ---- */
 function viewPremissa(){
-  const canSave=!!S.session && podeEditar(); const cgs=cargosSetor();
+  const canSave=true; const cgs=cargosSetor();  // página pública: editar/salvar/baixar sem login
   const setorSel=`<select onchange="setSetor(this.value)" class="px-2 py-1.5 border border-slate-200 rounded text-sm">${S.setores.map(s=>`<option value="${s.id}" ${String(s.id)===String(S.selSetor)?'selected':''}>${s.nome}</option>`).join('')}</select>`;
   const dowTabs=DOWS.map(d=>`<button onclick="setDow(${d})" class="px-3 py-1.5 rounded text-sm ${d===S.dowSel?'bg-blue-600 text-white':'bg-slate-100 text-slate-600 hover:bg-slate-200'}">${DOWF[d]}</button>`).join('');
   const totHora=h=>cgs.reduce((a,c)=>a+premissaVal(c,h),0);
