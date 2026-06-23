@@ -1991,5 +1991,340 @@ window._viewEscala=function(){
     +`<div class="mt-4">${folgBox}</div>`;
 };
 </script>
+<!-- ===================== MÓDULO COMISSÃO INDIVIDUAL — MERCEARIA CAMPOS ===================== -->
+<script>
+/* Modo 'individual': garçons recebem % sobre vendas próprias (relatório TOTVS); retaguarda por pontos; maître 5% ÷3.
+   Autocontido: envolve _viewComissao e carregarPonto sem tocar no fluxo de pontos (Amauri). */
+(function(){
+  const ptNum = s => { if(s==null) return 0; s=String(s).trim(); if(!s) return 0; s=s.replace(/\./g,'').replace(',','.'); const n=parseFloat(s); return isNaN(n)?0:n; };
+  const cargoDe = f => (S.cargos||[]).find(c=>c.id===f.cargo_id) || {};
+  const modoCampos = () => (S.restaurante && S.restaurante.modo_comissao)==='individual';
+  let campImport=null;   // preview transitório da importação
+
+  async function carregarVendasCampos(){
+    S.vendas=[];
+    if(!modoCampos() || !S.periodoAtual) return;
+    const { data } = await sb.from('vendas_totvs').select('*').eq('periodo_id',S.periodoAtual.id);
+    S.vendas=data||[];
+  }
+  window.carregarVendasCampos=carregarVendasCampos;
+  // envolve carregarPonto p/ também carregar as vendas TOTVS do período
+  if(typeof carregarPonto==='function'){
+    const _cp=carregarPonto;
+    carregarPonto=async function(){ await _cp.apply(this,arguments); try{ await carregarVendasCampos(); }catch(e){ console.error('vendas campos',e); } };
+    window.carregarPonto=carregarPonto;
+  }
+  // ramifica a view de comissão
+  const _vcPontos = window._viewComissao;
+  window._viewComissao = function(){ return modoCampos() ? viewComissaoCampos() : _vcPontos(); };
+
+  /* ---------- período semanal ---------- */
+  let campNovaSemana={ini:'',fim:''};
+  window.campCriarSemana=async function(){
+    const ini=val('camp_ini'), fim=val('camp_fim');
+    if(!ini||!fim){ alert('Informe início e fim da semana.'); return; }
+    if(fim<ini){ alert('Fim não pode ser antes do início.'); return; }
+    const ex=S.periodos.find(p=>p.tipo_pagamento==='semanal'&&p.data_inicio===ini&&p.data_fim===fim);
+    if(ex){ S.periodoAtual=ex; await carregarPonto(); render(); return; }
+    const d=new Date(ini+'T00:00:00');
+    const rec={ restaurante_id:S.restaurante.id, ciclo_id:null, tipo_pagamento:'semanal', funcionario_id:null,
+      ano:d.getFullYear(), mes:d.getMonth()+1, data_inicio:ini, data_fim:fim, dias_periodo:diasEntre(ini,fim),
+      taxa_servico_total:0, retencao_pct:Number(S.config.retencao_casa_pct)||33, status:'aberto' };
+    const { data, error }=await sb.from('periodos').insert(rec).select('*').single();
+    if(error){ alert('Erro ao criar semana: '+error.message); return; }
+    S.periodoAtual=data; await carregarDados(); render();
+  };
+
+  /* ---------- parser TOTVS ---------- */
+  window.campArquivo=function(inp){
+    const file=inp.files && inp.files[0]; if(!file) return;
+    const rd=new FileReader();
+    rd.onload=function(){
+      try{
+        const buf=rd.result;
+        let text;
+        try{ text=new TextDecoder('utf-16').decode(new Uint8Array(buf)); }
+        catch(e){ text=new TextDecoder('utf-8').decode(new Uint8Array(buf)); }
+        if(text.indexOf(';')<0){ text=new TextDecoder('utf-8').decode(new Uint8Array(buf)); }
+        campParseTexto(text);
+      }catch(e){ alert('Falha ao ler o arquivo: '+e.message); }
+    };
+    rd.readAsArrayBuffer(file);
+  };
+  function campParseTexto(text){
+    const lines=text.split(/\r?\n/);
+    const hi=lines.findIndex(l=>l.replace(/^﻿/,'').startsWith('CodigoVendedor'));
+    if(hi<0){ alert('Cabeçalho do relatório TOTVS não encontrado (CodigoVendedor;...).'); return; }
+    let di='', df='';
+    lines.slice(0,hi).forEach(l=>{ const m1=l.match(/Data Inicial\s*:\s*(\d{2}\/\d{2}\/\d{4})/); if(m1) di=m1[1]; const m2=l.match(/Data Final\s*:\s*(\d{2}\/\d{2}\/\d{4})/); if(m2) df=m2[1]; });
+    const loja=String(S.config.loja_totvs||1);
+    const agg={};
+    for(let i=hi+1;i<lines.length;i++){
+      const l=lines[i]; if(!l.trim()) continue;
+      const p=l.split(';'); if(p.length<11) continue;
+      if(String(p[2]).trim()!==loja) continue;
+      const cod=String(p[0]).trim();
+      (agg[cod]=agg[cod]||{sujo:0,rep:0,atend:0});
+      agg[cod].sujo+=ptNum(p[5]); agg[cod].rep+=ptNum(p[6]); agg[cod].atend+=parseInt(ptNum(p[3]))||0;
+    }
+    const codes=Object.keys(agg);
+    if(!codes.length){ alert('Nenhuma linha da loja '+loja+' encontrada no arquivo. Confira a "Loja TOTVS" nas Configurações.'); return; }
+    const rows=codes.map(cod=>{
+      const f=(S.funcionarios||[]).find(x=>String(x.codigo_totvs||'').trim()===cod);
+      let tipo='ignorado';
+      if(cod==='5000') tipo='global';
+      else if(f){ const cg=cargoDe(f); if(cg.maitre_5pct===true) tipo='global'; else if(cg.grupo_rateio==='salao') tipo='garcom'; else tipo='ignorado'; }
+      return { codigo:cod, sujo:agg[cod].sujo, rep:agg[cod].rep, atend:agg[cod].atend, funcId:f?f.id:null, nome:f?f.nome:(cod==='5000'?'GLOBAL (eventos)':'—'), tipo, override:'auto' };
+    }).sort((a,b)=>b.sujo-a.sujo);
+    campImport={di,df,loja,rows};
+    render();
+  }
+  window.campSetOverride=function(codigo,v){ const r=campImport.rows.find(x=>x.codigo===codigo); if(r){ r.override=v; render(); } };
+  window.campCancelarImport=function(){ campImport=null; render(); };
+
+  window.campSalvarImport=async function(){
+    if(!campImport){ return; }
+    if(!S.periodoAtual){ alert('Crie/selecione a semana antes de salvar.'); return; }
+    const recs=campImport.rows.map(r=>{
+      let tipo=r.tipo, funcId=r.funcId, reatrib=null;
+      if(r.override==='ignorar') tipo='ignorado';
+      else if(r.override && r.override!=='auto'){ reatrib=+r.override; }   // reatribui o sujo p/ um garçom (correção)
+      return { restaurante_id:S.restaurante.id, periodo_id:S.periodoAtual.id, codigo_totvs:r.codigo,
+        funcionario_id:funcId, tipo, sujo:r.sujo, repique:r.rep, reatribuir_funcionario_id:reatrib };
+    });
+    // limpa importação anterior do período e regrava
+    await sb.from('vendas_totvs').delete().eq('periodo_id',S.periodoAtual.id);
+    const { error }=await sb.from('vendas_totvs').insert(recs);
+    if(error){ alert('Erro ao salvar importação: '+error.message); return; }
+    campImport=null; await carregarVendasCampos(); render();
+    alert('Importação salva: '+recs.length+' lançamentos.');
+  };
+  window.campLimparVendas=async function(){
+    if(!S.periodoAtual||!confirm('Apagar as vendas importadas desta semana?')) return;
+    await sb.from('vendas_totvs').delete().eq('periodo_id',S.periodoAtual.id);
+    await carregarVendasCampos(); render();
+  };
+
+  /* ---------- motor de cálculo ---------- */
+  window.calcCampos=function(){
+    const cfg=S.config||{};
+    const retPct=Number(cfg.retencao_casa_pct)||33;
+    const pSalao=Number(cfg.camp_salao_pct)||63, pRet=Number(cfg.camp_retaguarda_pct)||32, pMai=Number(cfg.camp_maitre_pct)||5;
+    const vendas=S.vendas||[];
+    const garcons=(S.funcionarios||[]).filter(f=>cargoDe(f).grupo_rateio==='salao');
+    const basePct=(Math.max(0,...garcons.map(f=>Number(cargoDe(f).comissao_pct)||0)))/100;   // G1 (0,4221)
+    const g={}; garcons.forEach(f=>{ g[f.id]={f,sujo:0,rep:0,pct:(Number(cargoDe(f).comissao_pct)||0)/100}; });
+    let globalSujo=0, globalRep=0, ignoradoSujo=0;
+    vendas.forEach(v=>{
+      const s=Number(v.sujo)||0, r=Number(v.repique)||0;
+      const reass=v.reatribuir_funcionario_id;
+      if(reass && g[reass]){ g[reass].sujo+=s; g[reass].rep+=r; return; }
+      if(v.tipo==='garcom' && v.funcionario_id && g[v.funcionario_id]){ g[v.funcionario_id].sujo+=s; g[v.funcionario_id].rep+=r; }
+      else if(v.tipo==='global'){ globalSujo+=s; globalRep+=r; }
+      else ignoradoSujo+=s;
+    });
+    const garSujo=Object.values(g).reduce((a,x)=>a+x.sujo,0);
+    const T=garSujo+globalSujo;
+    const distribuida=T*(1-retPct/100);
+    const nG=garcons.length;
+    // bolo G2/G3
+    let bolo=0, nG23=0;
+    Object.values(g).forEach(x=>{ if(x.pct < basePct-1e-9){ bolo+=(basePct-x.pct)*x.sujo; nG23++; } });
+    const distG23 = nG23>0 ? bolo/nG23 : 0;
+    const globalComissao=globalSujo*basePct;
+    const globalEach = nG>0 ? globalComissao/nG : 0;
+    Object.values(g).forEach(x=>{
+      x.comLimpa=x.pct*x.sujo;
+      x.distG23=(x.pct < basePct-1e-9)?distG23:0;
+      x.global=globalEach;
+      x.caixinha=x.rep;
+      x.total=x.comLimpa+x.distG23+x.global+x.caixinha;
+    });
+    const salaoTotal=Object.values(g).reduce((a,x)=>a+x.total,0);
+    // retaguarda por pontos (inclui supervisores 25 pts)
+    const retag=(S.funcionarios||[]).filter(f=>cargoDe(f).grupo_rateio==='retaguarda');
+    const retagPool=distribuida*pRet/100;
+    const sumPts=retag.reduce((a,f)=>a+(Number(cargoDe(f).pontos)||0),0);
+    const rsPonto=sumPts>0?retagPool/sumPts:0;
+    // maître 5% ÷ nº de marcados
+    const maitres=(S.funcionarios||[]).filter(f=>cargoDe(f).maitre_5pct===true);
+    const maiPool=distribuida*pMai/100; const maiEach=maitres.length?maiPool/maitres.length:0;
+    return { retPct,pSalao,pRet,pMai, garSujo, globalSujo, globalRep, ignoradoSujo, T, distribuida,
+      retencaoVal:T*retPct/100, salaoPool:distribuida*pSalao/100, retagPool, maiPool, basePct,
+      g, garcons, retag, maitres, rsPonto, maiEach, salaoTotal, globalEach, nG };
+  };
+
+  /* ---------- tela ---------- */
+  function semanaSelector(){
+    const sems=(S.periodos||[]).filter(p=>p.tipo_pagamento==='semanal');
+    const cur=S.periodoAtual;
+    const opt=sems.map(p=>`<option value="${p.id}" ${cur&&cur.id===p.id?'selected':''}>${fmtData(new Date(p.data_inicio+'T00:00:00'))} a ${fmtData(new Date(p.data_fim+'T00:00:00'))}</option>`).join('');
+    const novo=podeEscrever('comissao')?`<span class="text-slate-300 hidden md:inline">|</span>
+        <input id="camp_ini" type="date" class="px-2 py-2 border border-slate-200 rounded text-sm">
+        <span class="text-slate-400 text-xs">a</span>
+        <input id="camp_fim" type="date" class="px-2 py-2 border border-slate-200 rounded text-sm">
+        <button onclick="campCriarSemana()" class="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-1"><i data-feather="plus" class="w-4 h-4"></i>Nova semana</button>`:'';
+    return card(`<div class="p-4 flex flex-wrap items-center gap-3">
+        <span class="text-sm font-semibold text-slate-700 flex items-center gap-2"><i data-feather="calendar" class="w-4 h-4 text-blue-600"></i>Semana</span>
+        ${sems.length?`<select onchange="selecionarPeriodo(this.value)" class="px-2 py-2 border border-slate-200 rounded text-sm">${opt}</select>`:'<span class="text-xs text-slate-400">nenhuma semana criada</span>'}
+        ${novo}
+      </div>`,'mb-4');
+  }
+  function importPreview(){
+    const totSujo=campImport.rows.reduce((a,r)=>a+r.sujo,0);
+    const optGarcom=(sel)=>(S.funcionarios||[]).filter(f=>cargoDe(f).grupo_rateio==='salao').sort((a,b)=>a.nome.localeCompare(b.nome)).map(f=>`<option value="${f.id}" ${String(sel)===String(f.id)?'selected':''}>↪ ${f.nome}</option>`).join('');
+    const tBadge={garcom:'bg-blue-100 text-blue-700',global:'bg-purple-100 text-purple-700',ignorado:'bg-slate-100 text-slate-500'};
+    const rows=campImport.rows.map(r=>`<tr class="border-b border-slate-100">
+        <td class="px-2 py-1.5 font-mono text-xs">${r.codigo}</td>
+        <td class="px-2 py-1.5">${r.nome}</td>
+        <td class="px-2 py-1.5 text-center"><span class="badge ${tBadge[r.tipo]||''}">${r.tipo}</span></td>
+        <td class="px-2 py-1.5 text-right">${money(r.sujo)}</td>
+        <td class="px-2 py-1.5 text-right text-slate-500">${money(r.rep)}</td>
+        <td class="px-2 py-1.5">
+          <select onchange="campSetOverride('${r.codigo}',this.value)" class="px-2 py-1 border border-slate-200 rounded text-xs w-full">
+            <option value="auto" ${r.override==='auto'?'selected':''}>Automático</option>
+            <option value="ignorar" ${r.override==='ignorar'?'selected':''}>Ignorar</option>
+            ${optGarcom(r.override!=='auto'&&r.override!=='ignorar'?r.override:'')}
+          </select>
+        </td></tr>`).join('');
+    return card(`<div class="p-5">
+        <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+          <h3 class="font-bold flex items-center gap-2"><i data-feather="upload" class="w-4 h-4 text-blue-600"></i>Pré-visualização da importação${campImport.di?` · ${campImport.di} a ${campImport.df}`:''}</h3>
+          <span class="text-xs text-slate-500">Loja ${campImport.loja} · ${campImport.rows.length} códigos · sujo total ${money(totSujo)}</span>
+        </div>
+        <p class="text-[11px] text-slate-400 mb-2">Vendas de maître caem em <strong>Global</strong> por padrão. Use a coluna "Crédito" para reatribuir um lançamento a um garçom (correção de erro) ou ignorar.</p>
+        <div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-left text-xs text-slate-500 border-b border-slate-200">
+          <th class="px-2 py-1.5">Código</th><th class="px-2 py-1.5">Colaborador</th><th class="px-2 py-1.5 text-center">Tipo</th><th class="px-2 py-1.5 text-right">Sujo</th><th class="px-2 py-1.5 text-right">Repique</th><th class="px-2 py-1.5">Crédito</th>
+        </tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="flex justify-end gap-2 mt-4">
+          <button onclick="campCancelarImport()" class="px-4 py-2 border border-slate-200 text-slate-600 rounded text-sm hover:bg-slate-50">Cancelar</button>
+          <button onclick="campSalvarImport()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="save" class="w-4 h-4"></i>Salvar importação</button>
+        </div></div>`,'mb-4');
+  }
+  function uploadBox(){
+    if(!podeEscrever('comissao')) return '';
+    return card(`<div class="p-5">
+        <h3 class="font-bold mb-2 flex items-center gap-2"><i data-feather="file-text" class="w-4 h-4 text-blue-600"></i>Importar relatório TOTVS (CHEFWEB R002)</h3>
+        <p class="text-[11px] text-slate-400 mb-3">Arquivo .csv exportado do TOTVS (Comissões de Atendentes). Filtra a Loja ${S.config.loja_totvs||1} automaticamente.</p>
+        <input type="file" accept=".csv,text/csv" onchange="campArquivo(this)" class="text-sm">
+      </div>`,'mb-4');
+  }
+  function tabelaCampos(c){
+    const fmtPct=p=>num(p*100,2)+'%';
+    // garçons
+    const gs=Object.values(c.g).filter(x=>x.sujo>0||x.total>0).sort((a,b)=>b.total-a.total);
+    const garLin=gs.map(x=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+        <td class="px-3 py-2 font-medium">${x.f.nome}</td>
+        <td class="px-3 py-2 text-center text-xs">${(cargoDe(x.f).nome||'').replace('GARCOM','G')}</td>
+        <td class="px-3 py-2 text-right">${money(x.sujo)}</td>
+        <td class="px-3 py-2 text-right text-slate-500">${fmtPct(x.pct)}</td>
+        <td class="px-3 py-2 text-right">${money(x.comLimpa)}</td>
+        <td class="px-3 py-2 text-right text-slate-500">${money(x.distG23)}</td>
+        <td class="px-3 py-2 text-right text-slate-500">${money(x.global)}</td>
+        <td class="px-3 py-2 text-right text-slate-500">${money(x.caixinha)}</td>
+        <td class="px-3 py-2 text-right font-bold text-blue-700">${money(x.total)}</td></tr>`).join('');
+    const garTot=gs.reduce((a,x)=>({sujo:a.sujo+x.sujo,lim:a.lim+x.comLimpa,d:a.d+x.distG23,gl:a.gl+x.global,cx:a.cx+x.caixinha,t:a.t+x.total}),{sujo:0,lim:0,d:0,gl:0,cx:0,t:0});
+    const garTab=card(`<div class="p-5"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="users" class="w-4 h-4 text-blue-600"></i>Salão — comissão individual <span class="text-xs font-normal text-slate-400">(${c.pSalao}% da distribuída)</span></h3>
+        <div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-left text-xs text-slate-500 border-b border-slate-200">
+          <th class="px-3 py-2">Garçom</th><th class="px-3 py-2 text-center">Faixa</th><th class="px-3 py-2 text-right">Vendas (sujo)</th><th class="px-3 py-2 text-right">%</th><th class="px-3 py-2 text-right">Comissão</th><th class="px-3 py-2 text-right">Dist. G2/G3</th><th class="px-3 py-2 text-right">Global</th><th class="px-3 py-2 text-right">Caixinha</th><th class="px-3 py-2 text-right">Total</th>
+        </tr></thead><tbody>${garLin||`<tr><td colspan="9" class="text-center text-slate-400 py-6">Sem vendas importadas.</td></tr>`}</tbody>
+        ${gs.length?`<tfoot><tr class="border-t-2 border-slate-200 font-semibold bg-slate-50"><td class="px-3 py-2">Total</td><td></td><td class="px-3 py-2 text-right">${money(garTot.sujo)}</td><td></td><td class="px-3 py-2 text-right">${money(garTot.lim)}</td><td class="px-3 py-2 text-right">${money(garTot.d)}</td><td class="px-3 py-2 text-right">${money(garTot.gl)}</td><td class="px-3 py-2 text-right">${money(garTot.cx)}</td><td class="px-3 py-2 text-right text-blue-700">${money(garTot.t)}</td></tr></tfoot>`:''}
+        </table></div></div>`,'mb-4');
+    // retaguarda + maître
+    const rt=c.retag.map(f=>{ const pts=Number(cargoDe(f).pontos)||0; const com=pts*c.rsPonto; const isMai=cargoDe(f).maitre_5pct===true; const mai=isMai?c.maiEach:0;
+      return {f,pts,com,mai,total:com+mai,isMai}; }).sort((a,b)=>b.total-a.total);
+    const rtLin=rt.map(x=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+        <td class="px-3 py-2 font-medium">${x.f.nome}${x.isMai?' <span class="badge bg-amber-100 text-amber-700 text-[9px]">maître</span>':''}</td>
+        <td class="px-3 py-2 text-xs text-slate-500">${cargoDe(x.f).nome||''}</td>
+        <td class="px-3 py-2 text-center">${num(x.pts,0)}</td>
+        <td class="px-3 py-2 text-right">${money(x.com)}</td>
+        <td class="px-3 py-2 text-right text-slate-500">${x.mai?money(x.mai):'—'}</td>
+        <td class="px-3 py-2 text-right font-bold text-blue-700">${money(x.total)}</td></tr>`).join('');
+    const rtTot=rt.reduce((a,x)=>({c:a.c+x.com,m:a.m+x.mai,t:a.t+x.total}),{c:0,m:0,t:0});
+    const rtTab=card(`<div class="p-5"><h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="grid" class="w-4 h-4 text-blue-600"></i>Retaguarda (${c.pRet}% por pontos) + Maître (${c.pMai}% ÷ ${c.maitres.length||0})</h3>
+        <div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-left text-xs text-slate-500 border-b border-slate-200">
+          <th class="px-3 py-2">Colaborador</th><th class="px-3 py-2">Cargo</th><th class="px-3 py-2 text-center">Pontos</th><th class="px-3 py-2 text-right">Com. pontos</th><th class="px-3 py-2 text-right">Maître 5%</th><th class="px-3 py-2 text-right">Total</th>
+        </tr></thead><tbody>${rtLin||`<tr><td colspan="6" class="text-center text-slate-400 py-6">Sem retaguarda.</td></tr>`}</tbody>
+        <tfoot><tr class="border-t-2 border-slate-200 font-semibold bg-slate-50"><td class="px-3 py-2" colspan="3">Total · R$/ponto ${money(c.rsPonto)}</td><td class="px-3 py-2 text-right">${money(rtTot.c)}</td><td class="px-3 py-2 text-right">${money(rtTot.m)}</td><td class="px-3 py-2 text-right text-blue-700">${money(rtTot.t)}</td></tr></tfoot>
+        </table></div></div>`,'mb-4');
+    return garTab+rtTab;
+  }
+  function viewComissaoCampos(){
+    const header=pageHeader('Comissão Individual — Mercearia Campos','Relatório TOTVS por garçom · salão 63% (individual) · retaguarda 32% (pontos) · maître 5%');
+    if(!S.periodoAtual){
+      return header+semanaSelector()+card(`<div class="p-12 text-center text-slate-400"><i data-feather="calendar" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Crie uma semana (acima) para importar o relatório e calcular a comissão.</p></div>`);
+    }
+    if(campImport) return header+semanaSelector()+importPreview();
+    const temVendas=(S.vendas||[]).length>0;
+    if(!temVendas) return header+semanaSelector()+uploadBox()+card(`<div class="p-10 text-center text-slate-400"><i data-feather="inbox" class="w-9 h-9 mx-auto mb-2"></i><p class="text-sm">Importe o relatório TOTVS desta semana para ver a comissão.</p></div>`);
+    const c=calcCampos();
+    const kpi=(lb,v,cls='')=>`<div class="p-3 rounded ${cls||'bg-slate-50'}"><p class="text-xs text-slate-500">${lb}</p><p class="font-bold ${cls?'':'text-slate-700'}">${v}</p></div>`;
+    const resumo=card(`<div class="p-5">
+        <h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="trending-down" class="w-4 h-4 text-blue-600"></i>Cascata da taxa de serviço</h3>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+          ${kpi('Taxa base (T)',money(c.T))}
+          ${kpi('Retenção '+num(c.retPct,0)+'%',money(c.retencaoVal))}
+          ${kpi('Distribuída',money(c.distribuida),'bg-blue-50 text-blue-700')}
+          ${kpi('Global (eventos)',money(c.globalSujo))}
+        </div>
+        <div class="grid grid-cols-3 gap-3">
+          ${kpi('Salão '+c.pSalao+'%',money(c.salaoPool),'bg-green-50 text-green-700')}
+          ${kpi('Retaguarda '+c.pRet+'%',money(c.retagPool),'bg-slate-50')}
+          ${kpi('Maître '+c.pMai+'%',money(c.maiPool),'bg-amber-50 text-amber-700')}
+        </div>
+        ${c.ignoradoSujo>0?`<p class="text-[11px] text-slate-400 mt-2">Sujo ignorado: ${money(c.ignoradoSujo)} (códigos sem mapeamento).</p>`:''}
+      </div>`,'mb-4');
+    const acoes=`<div class="flex justify-end gap-2 mb-3">
+        <button onclick="campExportCSV()" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700 flex items-center gap-2"><i data-feather="download" class="w-4 h-4"></i>CSV</button>
+        <button onclick="campPDF()" class="px-4 py-2 bg-slate-700 text-white rounded text-sm font-medium hover:bg-slate-800 flex items-center gap-2"><i data-feather="file-text" class="w-4 h-4"></i>PDF</button>
+        ${podeEscrever('comissao')?`<button onclick="campSalvarRelatorio()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="save" class="w-4 h-4"></i>Salvar em Relatórios</button>
+        <button onclick="campLimparVendas()" class="px-3 py-2 border border-rose-200 text-rose-600 rounded text-sm hover:bg-rose-50">Reimportar</button>`:''}
+      </div>`;
+    return header+semanaSelector()+resumo+acoes+tabelaCampos(c);
+  }
+
+  /* ---------- exportações ---------- */
+  window.campExportCSV=function(){
+    const c=calcCampos(); const L=[];
+    L.push('Tipo;Colaborador;Cargo;Vendas/Pontos;Comissao;DistG2G3;Global;Caixinha;Maitre;Total');
+    Object.values(c.g).filter(x=>x.sujo>0||x.total>0).sort((a,b)=>b.total-a.total).forEach(x=>{
+      L.push(['Salao',x.f.nome,(cargoDe(x.f).nome||''),x.sujo.toFixed(2),x.comLimpa.toFixed(2),x.distG23.toFixed(2),x.global.toFixed(2),x.caixinha.toFixed(2),'0.00',x.total.toFixed(2)].join(';'));
+    });
+    c.retag.forEach(f=>{ const pts=Number(cargoDe(f).pontos)||0; const com=pts*c.rsPonto; const mai=cargoDe(f).maitre_5pct===true?c.maiEach:0;
+      L.push(['Retaguarda',f.nome,(cargoDe(f).nome||''),String(pts),com.toFixed(2),'0.00','0.00','0.00',mai.toFixed(2),(com+mai).toFixed(2)].join(';')); });
+    const blob=new Blob(['﻿'+L.join('\n')],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download='comissao_campos_'+(S.periodoAtual.data_inicio)+'_'+(S.periodoAtual.data_fim)+'.csv'; a.click();
+  };
+  window.campPDF=function(){
+    if(!window.jspdf){ alert('Biblioteca de PDF não carregou. Recarregue a página.'); return; }
+    const c=calcCampos(); const { jsPDF }=window.jspdf; const doc=new jsPDF({unit:'mm',format:'a4'});
+    const p=S.periodoAtual; let y=14;
+    doc.setFontSize(13); doc.text('Comissão Individual — Mercearia Campos',14,y); y+=6;
+    doc.setFontSize(9); doc.setTextColor(110);
+    doc.text('Semana '+fmtData(new Date(p.data_inicio+'T00:00:00'))+' a '+fmtData(new Date(p.data_fim+'T00:00:00')),14,y); y+=5;
+    doc.text('Taxa base T '+money(c.T)+'  ·  Distribuída '+money(c.distribuida)+'  ·  Salão '+money(c.salaoPool)+'  ·  Retaguarda '+money(c.retagPool)+'  ·  Maître '+money(c.maiPool),14,y); y+=6;
+    doc.setTextColor(0); doc.setFontSize(10); doc.text('Salão',14,y); y+=4;
+    doc.setFontSize(8);
+    const gs=Object.values(c.g).filter(x=>x.sujo>0||x.total>0).sort((a,b)=>b.total-a.total);
+    doc.text('Garçom',14,y); doc.text('Sujo',95,y,{align:'right'}); doc.text('Comissão',120,y,{align:'right'}); doc.text('Global',140,y,{align:'right'}); doc.text('Caixinha',162,y,{align:'right'}); doc.text('Total',192,y,{align:'right'}); y+=1; doc.line(14,y,196,y); y+=4;
+    gs.forEach(x=>{ if(y>280){doc.addPage();y=14;} doc.text((x.f.nome||'').substring(0,38),14,y); doc.text(num(x.sujo),95,y,{align:'right'}); doc.text(num(x.comLimpa+x.distG23),120,y,{align:'right'}); doc.text(num(x.global),140,y,{align:'right'}); doc.text(num(x.caixinha),162,y,{align:'right'}); doc.text(num(x.total),192,y,{align:'right'}); y+=4.5; });
+    y+=3; if(y>270){doc.addPage();y=14;} doc.setFontSize(10); doc.text('Retaguarda + Maître',14,y); y+=4; doc.setFontSize(8);
+    doc.text('Colaborador',14,y); doc.text('Pontos',120,y,{align:'right'}); doc.text('Com. pontos',155,y,{align:'right'}); doc.text('Maître',172,y,{align:'right'}); doc.text('Total',192,y,{align:'right'}); y+=1; doc.line(14,y,196,y); y+=4;
+    c.retag.map(f=>{const pts=Number(cargoDe(f).pontos)||0;const com=pts*c.rsPonto;const mai=cargoDe(f).maitre_5pct===true?c.maiEach:0;return{f,pts,com,mai};}).sort((a,b)=>(b.com+b.mai)-(a.com+a.mai)).forEach(x=>{ if(y>280){doc.addPage();y=14;} doc.text((x.f.nome||'').substring(0,40),14,y); doc.text(num(x.pts,0),120,y,{align:'right'}); doc.text(num(x.com),155,y,{align:'right'}); doc.text(x.mai?num(x.mai):'—',172,y,{align:'right'}); doc.text(num(x.com+x.mai),192,y,{align:'right'}); y+=4.5; });
+    doc.save('comissao_campos_'+p.data_inicio+'.pdf');
+  };
+  window.campSalvarRelatorio=async function(){
+    const c=calcCampos(); const p=S.periodoAtual;
+    const totalGeral=c.salaoTotal + c.retag.reduce((a,f)=>a+(Number(cargoDe(f).pontos)||0)*c.rsPonto,0) + c.maiPool;
+    const nColab=Object.values(c.g).filter(x=>x.total>0).length + c.retag.length;
+    const { error }=await sb.from('pagamentos').insert({ restaurante_id:S.restaurante.id, periodo_id:p.id, ciclo:'Comissão Semanal',
+      data_pagamento:p.data_fim, apuracao:fmtData(new Date(p.data_inicio+'T00:00:00'))+' a '+fmtData(new Date(p.data_fim+'T00:00:00')),
+      colaboradores:nColab, total_comissao:c.salaoTotal, total_folha:totalGeral, status:'Previsto' });
+    if(error){ alert('Erro ao salvar: '+error.message); return; }
+    await carregarDados(); render(); alert('Relatório salvo em Relatórios.');
+  };
+})();
+</script>
 </body>
 </html>
