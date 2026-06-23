@@ -682,6 +682,7 @@ window._viewConfig = function(){
      return card(`<div class="p-6"><h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="dollar-sign" class="w-4 h-4 text-green-600"></i>Comissão individual — Mercearia Campos</h3>
       <p class="text-[11px] text-slate-400 mb-3">% da <strong>distribuída</strong> (após a retenção da casa) para cada grupo. Salão é individual (% por garçom no cargo); retaguarda por pontos; maître dividido igual.</p>
       ${f('Loja no TOTVS', numInput('cf_loja', cfg.loja_totvs??1))}
+      ${f('Código do Global no TOTVS', `<input id="cf_codglobal" type="text" value="${cfg.codigo_global_totvs??'5000'}" class="w-24 px-2 py-1 border border-slate-200 rounded text-sm text-right">`)}
       ${f('Salão', numInput('cf_csalao', cs,'%'))}
       ${f('Retaguarda', numInput('cf_cretag', cr,'%'))}
       ${f('Maître', numInput('cf_cmaitre', cm,'%'))}
@@ -719,7 +720,7 @@ window.salvarConfig = async function(){
     holerite_dentro_pct:dentro, holerite_fora_pct:100-dentro, desc_extras_pct:v('cf_descextras'), limite_he_dia_horas:v('cf_he'),
     horas_mes_base:v('cf_horasmes')||220, adicional_he_pct:v('cf_adiche'), adicional_noturno_pct:v('cf_adicnot')||50, adiantamento_pct:v('cf_adiantpct')||40,
     rateio_salao_pct:v('cf_ratsalao'), rateio_restante_pct:v('cf_ratrestante'), rateio_ranking_pct:v('cf_ratranking'), encargos_pct:v('cf_encargos'), updated_at:new Date().toISOString() };
-  if(document.getElementById('cf_csalao')){ upd.loja_totvs=v('cf_loja')||1; upd.camp_salao_pct=v('cf_csalao'); upd.camp_retaguarda_pct=v('cf_cretag'); upd.camp_maitre_pct=v('cf_cmaitre'); }
+  if(document.getElementById('cf_csalao')){ upd.loja_totvs=v('cf_loja')||1; upd.camp_salao_pct=v('cf_csalao'); upd.camp_retaguarda_pct=v('cf_cretag'); upd.camp_maitre_pct=v('cf_cmaitre'); const cg=(document.getElementById('cf_codglobal')||{}).value; upd.codigo_global_totvs=(cg&&cg.trim())||'5000'; }
   let e1=(await sb.from('config_remuneracao').update(upd).eq('id',S.config.id)).error;
   // ranking premio
   for(const r of S.ranking){ await sb.from('ranking_premio').update({percentual:v('rk_'+r.id)}).eq('id',r.id); }
@@ -2081,12 +2082,13 @@ window._viewEscala=function(){
     }
     const codes=Object.keys(agg);
     if(!codes.length){ alert('Nenhuma linha da loja '+loja+' encontrada no arquivo. Confira a "Loja TOTVS" nas Configurações.'); return; }
+    const codGlobal=String(S.config.codigo_global_totvs||'5000');
     const rows=codes.map(cod=>{
       const f=(S.funcionarios||[]).find(x=>String(x.codigo_totvs||'').trim()===cod);
       let tipo='ignorado';
-      if(cod==='5000') tipo='global';
-      else if(f){ const cg=cargoDe(f); if(cg.maitre_5pct===true) tipo='global'; else if(cg.grupo_rateio==='salao') tipo='garcom'; else tipo='ignorado'; }
-      return { codigo:cod, sujo:agg[cod].sujo, rep:agg[cod].rep, atend:agg[cod].atend, funcId:f?f.id:null, nome:f?f.nome:(cod==='5000'?'GLOBAL (eventos)':'—'), tipo, override:'auto' };
+      if(cod===codGlobal) tipo='global';
+      else if(f){ const cg=cargoDe(f); if(cg.comissao_pct!=null&&cg.comissao_pct!=='') tipo='garcom'; else if(cg.maitre_5pct===true) tipo='global'; else if(cg.grupo_rateio==='salao') tipo='garcom'; else tipo='ignorado'; }
+      return { codigo:cod, sujo:agg[cod].sujo, rep:agg[cod].rep, atend:agg[cod].atend, funcId:f?f.id:null, nome:f?f.nome:(cod===codGlobal?'GLOBAL (eventos)':'—'), tipo, override:'auto' };
     }).sort((a,b)=>b.sujo-a.sujo);
     campImport={di,df,loja,rows};
     render();
@@ -2100,6 +2102,7 @@ window._viewEscala=function(){
     const recs=campImport.rows.map(r=>{
       let tipo=r.tipo, funcId=r.funcId, reatrib=null;
       if(r.override==='ignorar') tipo='ignorado';
+      else if(r.override==='global') tipo='global';
       else if(r.override && r.override!=='auto'){ reatrib=+r.override; }   // reatribui o sujo p/ um garçom (correção)
       return { restaurante_id:S.restaurante.id, periodo_id:S.periodoAtual.id, codigo_totvs:r.codigo,
         funcionario_id:funcId, tipo, sujo:r.sujo, repique:r.rep, reatribuir_funcionario_id:reatrib };
@@ -2123,7 +2126,9 @@ window._viewEscala=function(){
     const retPct=Number(cfg.retencao_casa_pct)||33;
     const pSalao=Number(cfg.camp_salao_pct)||63, pRet=Number(cfg.camp_retaguarda_pct)||32, pMai=Number(cfg.camp_maitre_pct)||5;
     const vendas=S.vendas||[];
-    const garcons=(S.funcionarios||[]).filter(f=>cargoDe(f).grupo_rateio==='salao');
+    // salão individual = grupo salão OU qualquer cargo com % próprio (ex.: Cumim que também vende — dupla participação)
+    const temPct=c=>c.comissao_pct!=null&&c.comissao_pct!=='';
+    const garcons=(S.funcionarios||[]).filter(f=>{const c=cargoDe(f);return c.grupo_rateio==='salao'||temPct(c);});
     const basePct=(Math.max(0,...garcons.map(f=>Number(cargoDe(f).comissao_pct)||0)))/100;   // G1 (0,4221)
     const g={}; garcons.forEach(f=>{ g[f.id]={f,sujo:0,rep:0,pct:(Number(cargoDe(f).comissao_pct)||0)/100}; });
     let globalSujo=0, globalRep=0, ignoradoSujo=0;
@@ -2195,8 +2200,9 @@ window._viewEscala=function(){
         <td class="px-2 py-1.5">
           <select onchange="campSetOverride('${r.codigo}',this.value)" class="px-2 py-1 border border-slate-200 rounded text-xs w-full">
             <option value="auto" ${r.override==='auto'?'selected':''}>Automático</option>
+            <option value="global" ${r.override==='global'?'selected':''}>Global (evento)</option>
             <option value="ignorar" ${r.override==='ignorar'?'selected':''}>Ignorar</option>
-            ${optGarcom(r.override!=='auto'&&r.override!=='ignorar'?r.override:'')}
+            ${optGarcom(r.override!=='auto'&&r.override!=='ignorar'&&r.override!=='global'?r.override:'')}
           </select>
         </td></tr>`).join('');
     return card(`<div class="p-5">
