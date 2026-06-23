@@ -472,9 +472,9 @@ window.addSetor=async function(){ const nome=(val('ns_nome')||'').trim(); if(!no
 window.salvarSetorNome=async function(id,nome){ nome=(nome||'').trim(); if(!nome)return; const {error}=await sb.from('setores').update({nome}).eq('id',id); if(error){ alert('Erro: '+error.message); return; } const s=S.setores.find(x=>x.id===id); if(s)s.nome=nome; };
 window.excluirSetor=async function(id){ if(!confirm('Excluir este setor?'))return; const {error}=await sb.from('setores').delete().eq('id',id); if(error){ alert('Não foi possível excluir — provavelmente há cargos neste setor. ('+error.message+')'); return; } await carregarDados(); render(); };
 let cargoModal=null;
-window.abrirCargo=function(id){ if(id==null){ cargoModal={id:null, nome:'', setor_id:S.setores[0]?.id, pontos:0, grupo_rateio:'restante'}; } else { const c=S.cargos.find(x=>x.id===id); cargoModal={id:c.id, nome:c.nome, setor_id:c.setor_id, pontos:c.pontos, grupo_rateio:c.grupo_rateio||'restante'}; } paintModals(); };
+window.abrirCargo=function(id){ const ind=(S.restaurante&&S.restaurante.modo_comissao==='individual'); if(id==null){ cargoModal={id:null, nome:'', setor_id:S.setores[0]?.id, pontos:0, grupo_rateio:ind?'retaguarda':'restante', comissao_pct:null, maitre_5pct:false}; } else { const c=S.cargos.find(x=>x.id===id); cargoModal={id:c.id, nome:c.nome, setor_id:c.setor_id, pontos:c.pontos, grupo_rateio:c.grupo_rateio||'restante', comissao_pct:c.comissao_pct, maitre_5pct:c.maitre_5pct}; } paintModals(); };
 window.fecharCargo=function(){ cargoModal=null; paintModals(); };
-window.salvarCargo=async function(){ const d={ restaurante_id:S.restaurante.id, nome:(val('cg_nome')||'').trim(), setor_id:+val('cg_setor')||null, pontos:+val('cg_pontos')||0, grupo_rateio:val('cg_grupo') }; if(!d.nome){ alert('Informe o nome do cargo.'); return; } let err; if(cargoModal.id==null){ ({error:err}=await sb.from('cargos').insert(d)); } else { ({error:err}=await sb.from('cargos').update(d).eq('id',cargoModal.id)); } if(err){ alert('Erro: '+err.message); return; } cargoModal=null; await carregarDados(); render(); };
+window.salvarCargo=async function(){ const d={ restaurante_id:S.restaurante.id, nome:(val('cg_nome')||'').trim(), setor_id:+val('cg_setor')||null, pontos:+val('cg_pontos')||0, grupo_rateio:val('cg_grupo') }; if(document.getElementById('cg_compct')){ const cp=val('cg_compct'); d.comissao_pct=(cp===''||cp==null)?null:Number(cp); const mk=document.getElementById('cg_maitre5'); d.maitre_5pct=!!(mk&&mk.checked); } if(!d.nome){ alert('Informe o nome do cargo.'); return; } let err; if(cargoModal.id==null){ ({error:err}=await sb.from('cargos').insert(d)); } else { ({error:err}=await sb.from('cargos').update(d).eq('id',cargoModal.id)); } if(err){ alert('Erro: '+err.message); return; } cargoModal=null; await carregarDados(); render(); };
 window.excluirCargo=async function(id){ if(!confirm('Excluir este cargo?'))return; const {error}=await sb.from('cargos').delete().eq('id',id); if(error){ alert('Não foi possível excluir — provavelmente há funcionários neste cargo. ('+error.message+')'); return; } await carregarDados(); render(); };
 function cargoModalHTML(){ if(typeof cargoModal==='undefined'||!cargoModal)return ''; const m=cargoModal, novo=m.id==null;
   return `<div class="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)fecharCargo()">
@@ -484,7 +484,8 @@ function cargoModalHTML(){ if(typeof cargoModal==='undefined'||!cargoModal)retur
         <div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">Nome do cargo</label><input id="cg_nome" value="${(m.nome||'').replace(/"/g,'&quot;')}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
         <div><label class="text-xs text-slate-500 block mb-1">Setor</label><select id="cg_setor" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${S.setores.map(s=>`<option value="${s.id}" ${s.id===m.setor_id?'selected':''}>${s.nome}</option>`).join('')||'<option value="">— crie um setor antes —</option>'}</select></div>
         <div><label class="text-xs text-slate-500 block mb-1">Pontos</label><input id="cg_pontos" type="number" step="0.05" value="${m.pontos}" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div>
-        <div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">Grupo de rateio (Salão recebe % próprio; demais = Restante)</label><select id="cg_grupo" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"><option value="salao" ${m.grupo_rateio==='salao'?'selected':''}>Salão</option><option value="restante" ${m.grupo_rateio!=='salao'?'selected':''}>Restante</option></select></div>
+        <div class="col-span-2"><label class="text-xs text-slate-500 block mb-1">Grupo de rateio${(S.restaurante&&S.restaurante.modo_comissao==='individual')?' (Campos: Salão %, Retaguarda pontos, Maître 5%)':' (Salão recebe % próprio; demais = Restante)'}</label><select id="cg_grupo" class="w-full px-3 py-2 border border-slate-200 rounded text-sm">${(S.restaurante&&S.restaurante.modo_comissao==='individual')?`<option value="salao" ${m.grupo_rateio==='salao'?'selected':''}>Salão (% individual)</option><option value="retaguarda" ${m.grupo_rateio==='retaguarda'?'selected':''}>Retaguarda (pontos)</option><option value="maitre" ${m.grupo_rateio==='maitre'?'selected':''}>Maître</option>`:`<option value="salao" ${m.grupo_rateio==='salao'?'selected':''}>Salão</option><option value="restante" ${m.grupo_rateio!=='salao'?'selected':''}>Restante</option>`}</select></div>
+        ${(S.restaurante&&S.restaurante.modo_comissao==='individual')?`<div><label class="text-xs text-slate-500 block mb-1">% comissão (Salão)</label><input id="cg_compct" type="number" step="0.01" value="${m.comissao_pct??''}" placeholder="ex.: 42.21" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"></div><div class="flex items-end"><label class="flex items-center gap-2 text-sm text-slate-600"><input id="cg_maitre5" type="checkbox" ${m.maitre_5pct?'checked':''}> Divide o 5% do Maître</label></div>`:''}
       </div>
       <div class="flex justify-end gap-2 px-5 py-3 border-t border-slate-200"><button onclick="fecharCargo()" class="px-4 py-2 border border-slate-300 text-slate-600 rounded text-sm hover:bg-slate-100">Cancelar</button><button onclick="salvarCargo()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">${novo?'Cadastrar':'Salvar'}</button></div>
     </div></div>`;
@@ -677,11 +678,20 @@ window._viewConfig = function(){
       ${f('Ranking', numInput('cf_ratranking', pk,'%'))}
       <div class="mt-2 pt-2 border-t flex justify-between text-sm font-semibold ${Math.round(soma)===100?'text-green-600':'text-red-600'}"><span>Soma</span><span>${num(soma,0)}%</span></div>
     </div>`); })()
+  + ((S.restaurante&&S.restaurante.modo_comissao==='individual')?(()=>{ const cs=Number(cfg.camp_salao_pct??63),cr=Number(cfg.camp_retaguarda_pct??32),cm=Number(cfg.camp_maitre_pct??5); const soma=cs+cr+cm;
+     return card(`<div class="p-6"><h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="dollar-sign" class="w-4 h-4 text-green-600"></i>Comissão individual — Mercearia Campos</h3>
+      <p class="text-[11px] text-slate-400 mb-3">% da <strong>distribuída</strong> (após a retenção da casa) para cada grupo. Salão é individual (% por garçom no cargo); retaguarda por pontos; maître dividido igual.</p>
+      ${f('Loja no TOTVS', numInput('cf_loja', cfg.loja_totvs??1))}
+      ${f('Salão', numInput('cf_csalao', cs,'%'))}
+      ${f('Retaguarda', numInput('cf_cretag', cr,'%'))}
+      ${f('Maître', numInput('cf_cmaitre', cm,'%'))}
+      <div class="mt-2 pt-2 border-t flex justify-between text-sm font-semibold ${Math.round(soma)===100?'text-green-600':'text-red-600'}"><span>Soma</span><span>${num(soma,0)}%</span></div>
+    </div>`); })():'')
   + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="award" class="w-4 h-4 text-amber-600"></i>Ranking — % por colocação</h3>
       ${S.ranking.map(r=>f(r.colocacao+'º lugar', numInput('rk_'+r.id, r.percentual,'%'))).join('')||'<p class="text-sm text-slate-400">Sem colocações.</p>'}
     </div>`)
   + `</div>`
-  + `<div class="mt-4">${card(`<div class="p-6"><h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="users" class="w-4 h-4 text-blue-600"></i>Grupos de rateio — cargos</h3>
+  + ((S.restaurante&&S.restaurante.modo_comissao==='individual')?'':`<div class="mt-4">${card(`<div class="p-6"><h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="users" class="w-4 h-4 text-blue-600"></i>Grupos de rateio — cargos</h3>
       <p class="text-[11px] text-slate-400 mb-3">Defina quais cargos entram no <strong>Salão</strong>; os demais formam o <strong>Restante</strong>. Vale para o cálculo da comissão.</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
       ${S.cargos.slice().sort((a,b)=>a.nome.localeCompare(b.nome)).map(c=>`<div class="flex items-center justify-between gap-2 p-2 border border-slate-100 rounded">
@@ -690,7 +700,7 @@ window._viewConfig = function(){
             <option value="salao" ${c.grupo_rateio==='salao'?'selected':''}>Salão</option>
             <option value="restante" ${c.grupo_rateio!=='salao'?'selected':''}>Restante</option>
           </select></div>`).join('')}
-      </div></div>`)}</div>`
+      </div></div>`)}</div>`)
   + `<div class="mt-4">${card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="repeat" class="w-4 h-4 text-blue-600"></i>Ciclos de pagamento</h3>
       <div class="space-y-2">${S.ciclos.map(c=>`<div class="p-3 border border-slate-200 rounded text-sm flex items-center justify-between">
         <div><strong>${c.nome}</strong> · apuração dia ${c.apur_ini_dia} (${c.apur_ini_off<0?'mês ant.':'mês corr.'}) ao ${c.apur_fim_dia} (${c.apur_fim_off<0?'mês ant.':'mês corr.'})</div>
@@ -709,6 +719,7 @@ window.salvarConfig = async function(){
     holerite_dentro_pct:dentro, holerite_fora_pct:100-dentro, desc_extras_pct:v('cf_descextras'), limite_he_dia_horas:v('cf_he'),
     horas_mes_base:v('cf_horasmes')||220, adicional_he_pct:v('cf_adiche'), adicional_noturno_pct:v('cf_adicnot')||50, adiantamento_pct:v('cf_adiantpct')||40,
     rateio_salao_pct:v('cf_ratsalao'), rateio_restante_pct:v('cf_ratrestante'), rateio_ranking_pct:v('cf_ratranking'), encargos_pct:v('cf_encargos'), updated_at:new Date().toISOString() };
+  if(document.getElementById('cf_csalao')){ upd.loja_totvs=v('cf_loja')||1; upd.camp_salao_pct=v('cf_csalao'); upd.camp_retaguarda_pct=v('cf_cretag'); upd.camp_maitre_pct=v('cf_cmaitre'); }
   let e1=(await sb.from('config_remuneracao').update(upd).eq('id',S.config.id)).error;
   // ranking premio
   for(const r of S.ranking){ await sb.from('ranking_premio').update({percentual:v('rk_'+r.id)}).eq('id',r.id); }
@@ -1381,6 +1392,7 @@ window.gerarRelatorioPDF = async function(pagId){
   if(!window.jspdf){ alert('Biblioteca de PDF não carregou. Recarregue a página.'); return; }
   const h=S.pagamentos.find(x=>x.id===pagId); if(!h){ alert('Pagamento não encontrado.'); return; }
   if(String(h.ciclo||'').toLowerCase().includes('extra')) return gerarExtrasPDF(h);
+  if(String(h.ciclo||'').toLowerCase().includes('semanal')){ await selectPeriodo(h.periodo_id); if(window.campPDF){ window.campPDF(); } return; }
   const { data, error }=await sb.from('comissao_resultado').select('*, funcionarios(nome)').eq('periodo_id',h.periodo_id);
   if(error){ alert('Erro ao carregar o relatório: '+error.message); return; }
   const rows=(data||[]).slice().sort((a,b)=>(a.setor||'').localeCompare(b.setor||'')||((Number(b.total)||0)-(Number(a.total)||0)));
@@ -1850,7 +1862,7 @@ window.aceitarEscala = async function(envioId){
   const { error:e1 }=await sb.from('escala').delete().eq('setor_id',env.setor_id).gte('data',ini).lte('data',fim);
   if(e1){ alert('Erro ao limpar escala: '+e1.message); return; }
   if(rasc&&rasc.length){
-    const recs=rasc.map(r=>({restaurante_id:r.restaurante_id||1,setor_id:r.setor_id,funcionario_id:r.funcionario_id,nome:r.nome,cargo:r.cargo,data:r.data,status:r.status,entrada:r.entrada,saida:r.saida,periodo:r.periodo,obs:r.obs}));
+    const recs=rasc.map(r=>({restaurante_id:r.restaurante_id||S.restaurante.id,setor_id:r.setor_id,funcionario_id:r.funcionario_id,nome:r.nome,cargo:r.cargo,data:r.data,status:r.status,entrada:r.entrada,saida:r.saida,periodo:r.periodo,obs:r.obs}));
     const { error:e2 }=await sb.from('escala').insert(recs);
     if(e2){ alert('Erro ao publicar escala: '+e2.message); return; }
   }
@@ -1874,7 +1886,7 @@ function contaHora(data,h){ return (S.escala||[]).filter(r=>r.data===data&&cover
 function metaHora(setor,dow,h){ const m=(S.escalaMetaHora||[]).find(x=>x.setor_id===setor&&x.dow===dow&&x.hora===h); return m?Number(m.meta):0; }
 window.escSalvarMetaHora=async function(setor,dow,h,v){ v=+v||0; const ex=(S.escalaMetaHora||[]).find(x=>x.setor_id===setor&&x.dow===dow&&x.hora===h);
   if(ex){ await sb.from('escala_meta_hora').update({meta:v}).eq('id',ex.id); S.escalaMetaHora=S.escalaMetaHora.map(x=>x.id===ex.id?{...x,meta:v}:x); }
-  else { const {data}=await sb.from('escala_meta_hora').insert({restaurante_id:1,setor_id:setor,dow,hora:h,meta:v}).select('*').single(); if(data){S.escalaMetaHora=S.escalaMetaHora||[];S.escalaMetaHora.push(data);} }
+  else { const {data}=await sb.from('escala_meta_hora').insert({restaurante_id:S.restaurante.id,setor_id:setor,dow,hora:h,meta:v}).select('*').single(); if(data){S.escalaMetaHora=S.escalaMetaHora||[];S.escalaMetaHora.push(data);} }
   render();
 };
 window.escSetMetaDow=function(v){ escMetaDow=+v; render(); };
@@ -1897,7 +1909,7 @@ window.escSalvar=async function(){
   const rec={status, entrada:status==='trabalha'?(val('ec_ent')||null):null, saida:status==='trabalha'?(val('ec_sai')||null):null, periodo:status==='trabalha'?(val('ec_per')||null):null, updated_at:new Date().toISOString()};
   const ex=celEsc(e.nome,e.data);
   if(ex){ await sb.from('escala').update(rec).eq('id',ex.id); }
-  else { await sb.from('escala').insert({restaurante_id:1,setor_id:escSetor,nome:e.nome,funcionario_id:e.funcionario_id||null,cargo:e.cargo||null,data:e.data,...rec}); }
+  else { await sb.from('escala').insert({restaurante_id:S.restaurante.id,setor_id:escSetor,nome:e.nome,funcionario_id:e.funcionario_id||null,cargo:e.cargo||null,data:e.data,...rec}); }
   escEdit=null; await carregarEscala(); render();
 };
 window.escAddPessoa=async function(){
@@ -1905,13 +1917,13 @@ window.escAddPessoa=async function(){
   const nome=f?f.nome:(val('ep_nome')||'').trim(); if(!nome){ alert('Escolha um funcionário ou digite um nome.'); return; }
   if(pessoasEsc().some(p=>p.nome.toUpperCase()===nome.toUpperCase())){ alert('Essa pessoa já está na escala.'); return; }
   const dias=semanasMes()[escSemanaIdx]||[];
-  const rows=dias.map(d=>({restaurante_id:1,setor_id:escSetor,nome,funcionario_id:f?f.id:null,cargo:f?(f.cargos&&f.cargos.nome||null):null,data:d,status:'folga'}));
+  const rows=dias.map(d=>({restaurante_id:S.restaurante.id,setor_id:escSetor,nome,funcionario_id:f?f.id:null,cargo:f?(f.cargos&&f.cargos.nome||null):null,data:d,status:'folga'}));
   await sb.from('escala').insert(rows); await carregarEscala(); render();
 };
 window.escRemovePessoa=async function(nome){ if(!confirm('Remover '+nome+' desta semana?'))return; const dias=semanasMes()[escSemanaIdx]||[]; await sb.from('escala').delete().eq('setor_id',escSetor).eq('nome',nome).in('data',dias); await carregarEscala(); render(); };
 window.escSalvarMin=async function(dow,per,v){ v=+v||0; const ex=(S.escalaMin||[]).find(x=>x.dow===dow&&x.periodo===per);
   if(ex){ await sb.from('escala_minimo').update({minimo:v}).eq('id',ex.id); S.escalaMin=S.escalaMin.map(x=>x.id===ex.id?{...x,minimo:v}:x); }
-  else { const {data}=await sb.from('escala_minimo').insert({restaurante_id:1,setor_id:escSetor,dow,periodo:per,minimo:v}).select('*').single(); if(data){S.escalaMin=S.escalaMin||[];S.escalaMin.push(data);} }
+  else { const {data}=await sb.from('escala_minimo').insert({restaurante_id:S.restaurante.id,setor_id:escSetor,dow,periodo:per,minimo:v}).select('*').single(); if(data){S.escalaMin=S.escalaMin||[];S.escalaMin.push(data);} }
   render();
 };
 
