@@ -2015,10 +2015,13 @@ window._viewEscala=function(){
   let campImport=null;   // preview transitório da importação
 
   async function carregarVendasCampos(){
-    S.vendas=[];
+    S.vendas=[]; S.globalRateio=[];
     if(!modoCampos() || !S.periodoAtual) return;
-    const { data } = await sb.from('vendas_totvs').select('*').eq('periodo_id',S.periodoAtual.id);
-    S.vendas=data||[];
+    const [v,gr] = await Promise.all([
+      sb.from('vendas_totvs').select('*').eq('periodo_id',S.periodoAtual.id),
+      sb.from('global_rateio').select('*').eq('periodo_id',S.periodoAtual.id),
+    ]);
+    S.vendas=v.data||[]; S.globalRateio=gr.data||[];
   }
   window.carregarVendasCampos=carregarVendasCampos;
   // envolve carregarPonto p/ também carregar as vendas TOTVS do período
@@ -2077,8 +2080,10 @@ window._viewEscala=function(){
       const p=l.split(';'); if(p.length<11) continue;
       if(String(p[2]).trim()!==loja) continue;
       const cod=String(p[0]).trim();
-      (agg[cod]=agg[cod]||{sujo:0,rep:0,atend:0});
+      (agg[cod]=agg[cod]||{sujo:0,rep:0,atend:0,dias:{}});
       agg[cod].sujo+=ptNum(p[5]); agg[cod].rep+=ptNum(p[6]); agg[cod].atend+=parseInt(ptNum(p[3]))||0;
+      const dm=String(p[1]||'').trim().match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+      if(dm){ const iso=dm[3]+'-'+dm[2]+'-'+dm[1]; (agg[cod].dias[iso]=agg[cod].dias[iso]||{sujo:0,rep:0}); agg[cod].dias[iso].sujo+=ptNum(p[5]); agg[cod].dias[iso].rep+=ptNum(p[6]); }
     }
     const codes=Object.keys(agg);
     if(!codes.length){ alert('Nenhuma linha da loja '+loja+' encontrada no arquivo. Confira a "Loja TOTVS" nas Configurações.'); return; }
@@ -2088,7 +2093,7 @@ window._viewEscala=function(){
       let tipo='ignorado';
       if(cod===codGlobal) tipo='global';
       else if(f){ const cg=cargoDe(f); if(cg.comissao_pct!=null&&cg.comissao_pct!=='') tipo='garcom'; else if(cg.maitre_5pct===true) tipo='global'; else if(cg.grupo_rateio==='salao') tipo='garcom'; else tipo='ignorado'; }
-      return { codigo:cod, sujo:agg[cod].sujo, rep:agg[cod].rep, atend:agg[cod].atend, funcId:f?f.id:null, nome:f?f.nome:(cod===codGlobal?'GLOBAL (eventos)':'—'), tipo, override:'auto' };
+      return { codigo:cod, sujo:agg[cod].sujo, rep:agg[cod].rep, atend:agg[cod].atend, dias:agg[cod].dias, funcId:f?f.id:null, nome:f?f.nome:(cod===codGlobal?'GLOBAL (eventos)':'—'), tipo, override:'auto' };
     }).sort((a,b)=>b.sujo-a.sujo);
     campImport={di,df,loja,rows};
     render();
@@ -2099,13 +2104,21 @@ window._viewEscala=function(){
   window.campSalvarImport=async function(){
     if(!campImport){ return; }
     if(!S.periodoAtual){ alert('Crie/selecione a semana antes de salvar.'); return; }
-    const recs=campImport.rows.map(r=>{
+    const recs=[];
+    campImport.rows.forEach(r=>{
       let tipo=r.tipo, funcId=r.funcId, reatrib=null;
       if(r.override==='ignorar') tipo='ignorado';
       else if(r.override==='global') tipo='global';
       else if(r.override && r.override!=='auto'){ reatrib=+r.override; }   // reatribui o sujo p/ um garçom (correção)
-      return { restaurante_id:S.restaurante.id, periodo_id:S.periodoAtual.id, codigo_totvs:r.codigo,
-        funcionario_id:funcId, tipo, sujo:r.sujo, repique:r.rep, reatribuir_funcionario_id:reatrib };
+      const base={ restaurante_id:S.restaurante.id, periodo_id:S.periodoAtual.id, codigo_totvs:r.codigo,
+        funcionario_id:funcId, tipo, reatribuir_funcionario_id:reatrib };
+      const dias=Object.keys(r.dias||{});
+      if(tipo==='global' && dias.length){
+        // global é POR DIA (a divisão é selecionada manualmente por dia)
+        dias.forEach(d=>recs.push({...base, sujo:r.dias[d].sujo, repique:r.dias[d].rep, data:d}));
+      } else {
+        recs.push({...base, sujo:r.sujo, repique:r.rep, data:null});
+      }
     });
     // limpa importação anterior do período e regrava
     await sb.from('vendas_totvs').delete().eq('periodo_id',S.periodoAtual.id);
@@ -2132,12 +2145,13 @@ window._viewEscala=function(){
     const basePct=(Math.max(0,...garcons.map(f=>Number(cargoDe(f).comissao_pct)||0)))/100;   // G1 (0,4221)
     const g={}; garcons.forEach(f=>{ g[f.id]={f,sujo:0,rep:0,pct:(Number(cargoDe(f).comissao_pct)||0)/100}; });
     let globalSujo=0, globalRep=0, ignoradoSujo=0;
+    const globalDiasMap={};   // data -> sujo (global é por dia; divisão selecionada manualmente)
     vendas.forEach(v=>{
       const s=Number(v.sujo)||0, r=Number(v.repique)||0;
       const reass=v.reatribuir_funcionario_id;
       if(reass && g[reass]){ g[reass].sujo+=s; g[reass].rep+=r; return; }
       if(v.tipo==='garcom' && v.funcionario_id && g[v.funcionario_id]){ g[v.funcionario_id].sujo+=s; g[v.funcionario_id].rep+=r; }
-      else if(v.tipo==='global'){ globalSujo+=s; globalRep+=r; }
+      else if(v.tipo==='global'){ globalSujo+=s; globalRep+=r; const d=v.data||'sem-data'; globalDiasMap[d]=(globalDiasMap[d]||0)+s; }
       else ignoradoSujo+=s;
     });
     const garSujo=Object.values(g).reduce((a,x)=>a+x.sujo,0);
@@ -2148,12 +2162,21 @@ window._viewEscala=function(){
     let bolo=0, nG23=0;
     Object.values(g).forEach(x=>{ if(x.pct < basePct-1e-9){ bolo+=(basePct-x.pct)*x.sujo; nG23++; } });
     const distG23 = nG23>0 ? bolo/nG23 : 0;
+    // GLOBAL POR DIA: cada dia é dividido apenas entre os garçons SELECIONADOS manualmente (global_rateio)
+    const selByDia={}; (S.globalRateio||[]).forEach(x=>{ (selByDia[x.data]=selByDia[x.data]||[]).push(x.funcionario_id); });
     const globalComissao=globalSujo*basePct;
-    const globalEach = nG>0 ? globalComissao/nG : 0;
+    let globalPendente=0;
+    const globalDias=Object.keys(globalDiasMap).sort().map(d=>{
+      const sujo=globalDiasMap[d], com=sujo*basePct;
+      const sel=(selByDia[d]||[]).filter(id=>g[id]);
+      if(sel.length){ const each=com/sel.length; sel.forEach(id=>{ g[id].global=(g[id].global||0)+each; }); }
+      else globalPendente+=com;
+      return {data:d, sujo, com, sel};
+    });
     Object.values(g).forEach(x=>{
       x.comLimpa=x.pct*x.sujo;
       x.distG23=(x.pct < basePct-1e-9)?distG23:0;
-      x.global=globalEach;
+      x.global=x.global||0;
       x.caixinha=x.rep;
       x.total=x.comLimpa+x.distG23+x.global+x.caixinha;
     });
@@ -2168,7 +2191,7 @@ window._viewEscala=function(){
     const maiPool=distribuida*pMai/100; const maiEach=maitres.length?maiPool/maitres.length:0;
     return { retPct,pSalao,pRet,pMai, garSujo, globalSujo, globalRep, ignoradoSujo, T, distribuida,
       retencaoVal:T*retPct/100, salaoPool:distribuida*pSalao/100, retagPool, maiPool, basePct,
-      g, garcons, retag, maitres, rsPonto, maiEach, salaoTotal, globalEach, nG };
+      g, garcons, retag, maitres, rsPonto, maiEach, salaoTotal, nG, globalDias, globalPendente, globalComissao };
   };
 
   /* ---------- tela ---------- */
@@ -2226,6 +2249,54 @@ window._viewEscala=function(){
         <p class="text-[11px] text-slate-400 mb-3">Arquivo .csv exportado do TOTVS (Comissões de Atendentes). Filtra a Loja ${S.config.loja_totvs||1} automaticamente.</p>
         <input type="file" accept=".csv,text/csv" onchange="campArquivo(this)" class="text-sm">
       </div>`,'mb-4');
+  }
+  /* ---------- global por dia: seleção manual de quem divide ---------- */
+  window.campToggleGlobal=async function(data,fid){
+    fid=+fid;
+    const ex=(S.globalRateio||[]).find(x=>x.data===data&&x.funcionario_id===fid);
+    if(ex){ await sb.from('global_rateio').delete().eq('id',ex.id); S.globalRateio=S.globalRateio.filter(x=>x.id!==ex.id); }
+    else{ const {data:novo,error}=await sb.from('global_rateio').insert({restaurante_id:S.restaurante.id,periodo_id:S.periodoAtual.id,data,funcionario_id:fid}).select('*').single();
+      if(error){ alert('Erro: '+error.message); return; } S.globalRateio.push(novo); }
+    render();
+  };
+  window.campGlobalTodos=async function(data){
+    const c=calcCampos(); const falta=c.garcons.filter(f=>!(S.globalRateio||[]).some(x=>x.data===data&&x.funcionario_id===f.id));
+    if(!falta.length) return;
+    const recs=falta.map(f=>({restaurante_id:S.restaurante.id,periodo_id:S.periodoAtual.id,data,funcionario_id:f.id}));
+    const {data:novos,error}=await sb.from('global_rateio').insert(recs).select('*');
+    if(error){ alert('Erro: '+error.message); return; }
+    S.globalRateio=S.globalRateio.concat(novos||[]); render();
+  };
+  window.campGlobalLimpar=async function(data){
+    await sb.from('global_rateio').delete().eq('periodo_id',S.periodoAtual.id).eq('data',data);
+    S.globalRateio=(S.globalRateio||[]).filter(x=>x.data!==data); render();
+  };
+  function globalCard(c){
+    if(!(c.globalDias||[]).length) return '';
+    const fmtD=d=>d==='sem-data'?'sem data':`${d.slice(8,10)}/${d.slice(5,7)}`;
+    const podeSel=podeEscrever('comissao');
+    const blocos=c.globalDias.map(gd=>{
+      const chips=c.garcons.slice().sort((a,b)=>a.nome.localeCompare(b.nome)).map(f=>{
+        const on=gd.sel.includes(f.id);
+        return podeSel?`<button onclick="campToggleGlobal('${gd.data}',${f.id})" class="px-2 py-1 rounded text-xs border ${on?'bg-blue-600 text-white border-blue-600':'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}">${f.nome.split(' ')[0]}</button>`
+          :(on?`<span class="px-2 py-1 rounded text-xs bg-blue-100 text-blue-700">${f.nome.split(' ')[0]}</span>`:'');
+      }).join(' ');
+      const n=gd.sel.length;
+      return `<div class="p-3 border ${n?'border-slate-200':'border-amber-300 bg-amber-50/40'} rounded mb-2">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <div class="text-sm"><strong>${fmtD(gd.data)}</strong> · sujo ${money(gd.sujo)} · comissão <strong>${money(gd.com)}</strong>
+            ${n?`<span class="text-slate-500">· ÷${n} = ${money(gd.com/n)} cada</span>`:`<span class="badge bg-amber-100 text-amber-700 ml-1">selecione quem divide</span>`}</div>
+          ${podeSel?`<div class="flex gap-2"><button onclick="campGlobalTodos('${gd.data}')" class="text-xs text-blue-600 hover:underline">todos</button><button onclick="campGlobalLimpar('${gd.data}')" class="text-xs text-slate-400 hover:underline">limpar</button></div>`:''}
+        </div>
+        <div class="flex flex-wrap gap-1">${chips}</div>
+      </div>`;
+    }).join('');
+    return card(`<div class="p-5">
+      <h3 class="font-bold mb-1 flex items-center gap-2"><i data-feather="gift" class="w-4 h-4 text-purple-600"></i>Comissão Global — seleção por dia</h3>
+      <p class="text-[11px] text-slate-400 mb-3">Cada dia com lançamento no Global (eventos etc.) é dividido apenas entre os garçons <strong>selecionados</strong> daquele dia. Nada é dividido automaticamente.</p>
+      ${c.globalPendente>0?`<div class="mb-3 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800 flex items-center gap-2"><i data-feather="alert-triangle" class="w-4 h-4"></i>${money(c.globalPendente)} de comissão global ainda sem divisão — selecione os garçons dos dias marcados.</div>`:''}
+      ${blocos}
+    </div>`,'mb-4');
   }
   function tabelaCampos(c){
     const fmtPct=p=>num(p*100,2)+'%';
@@ -2298,7 +2369,7 @@ window._viewEscala=function(){
         ${podeEscrever('comissao')?`<button onclick="campSalvarRelatorio()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="save" class="w-4 h-4"></i>Salvar em Relatórios</button>
         <button onclick="campLimparVendas()" class="px-3 py-2 border border-rose-200 text-rose-600 rounded text-sm hover:bg-rose-50">Reimportar</button>`:''}
       </div>`;
-    return header+semanaSelector()+resumo+acoes+tabelaCampos(c);
+    return header+semanaSelector()+resumo+globalCard(c)+acoes+tabelaCampos(c);
   }
 
   /* ---------- exportações ---------- */
