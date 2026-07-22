@@ -686,6 +686,7 @@ window._viewConfig = function(){
       ${f('Salão', numInput('cf_csalao', cs,'%'))}
       ${f('Retaguarda', numInput('cf_cretag', cr,'%'))}
       ${f('Maître', numInput('cf_cmaitre', cm,'%'))}
+      ${f('Bolo das diferenças G2/G3 vai para', `<select id="cf_distg23" class="px-2 py-1 border border-slate-200 rounded text-sm"><option value="g23" ${(cfg.dist_g23_para||'g23')!=='g1'?'selected':''}>Garçons 2 e 3 (Campos)</option><option value="g1" ${cfg.dist_g23_para==='g1'?'selected':''}>Garçons 1 (Bam Bam)</option></select>`)}
       <div class="mt-2 pt-2 border-t flex justify-between text-sm font-semibold ${Math.round(soma)===100?'text-green-600':'text-red-600'}"><span>Soma</span><span>${num(soma,0)}%</span></div>
     </div>`); })():'')
   + card(`<div class="p-6"><h3 class="font-bold mb-4 flex items-center gap-2"><i data-feather="award" class="w-4 h-4 text-amber-600"></i>Ranking — % por colocação</h3>
@@ -720,7 +721,7 @@ window.salvarConfig = async function(){
     holerite_dentro_pct:dentro, holerite_fora_pct:100-dentro, desc_extras_pct:v('cf_descextras'), limite_he_dia_horas:v('cf_he'),
     horas_mes_base:v('cf_horasmes')||220, adicional_he_pct:v('cf_adiche'), adicional_noturno_pct:v('cf_adicnot')||50, adiantamento_pct:v('cf_adiantpct')||40,
     rateio_salao_pct:v('cf_ratsalao'), rateio_restante_pct:v('cf_ratrestante'), rateio_ranking_pct:v('cf_ratranking'), encargos_pct:v('cf_encargos'), updated_at:new Date().toISOString() };
-  if(document.getElementById('cf_csalao')){ upd.loja_totvs=v('cf_loja')||1; upd.camp_salao_pct=v('cf_csalao'); upd.camp_retaguarda_pct=v('cf_cretag'); upd.camp_maitre_pct=v('cf_cmaitre'); const cg=(document.getElementById('cf_codglobal')||{}).value; upd.codigo_global_totvs=(cg&&cg.trim())||'5000'; }
+  if(document.getElementById('cf_csalao')){ upd.loja_totvs=v('cf_loja')||1; upd.camp_salao_pct=v('cf_csalao'); upd.camp_retaguarda_pct=v('cf_cretag'); upd.camp_maitre_pct=v('cf_cmaitre'); const cg=(document.getElementById('cf_codglobal')||{}).value; upd.codigo_global_totvs=(cg&&cg.trim())||'5000'; upd.dist_g23_para=(document.getElementById('cf_distg23')||{}).value||'g23'; }
   let e1=(await sb.from('config_remuneracao').update(upd).eq('id',S.config.id)).error;
   // ranking premio
   for(const r of S.ranking){ await sb.from('ranking_premio').update({percentual:v('rk_'+r.id)}).eq('id',r.id); }
@@ -2134,11 +2135,11 @@ window._viewEscala=function(){
   };
 
   /* ---------- motor de cálculo ---------- */
-  window.calcCampos=function(){
+  function calcCamposFrom(vendas, rateio){
     const cfg=S.config||{};
     const retPct=Number(cfg.retencao_casa_pct)||33;
     const pSalao=Number(cfg.camp_salao_pct)||63, pRet=Number(cfg.camp_retaguarda_pct)||32, pMai=Number(cfg.camp_maitre_pct)||5;
-    const vendas=S.vendas||[];
+    vendas=vendas||[];
     // salão individual = grupo salão OU qualquer cargo com % próprio (ex.: Cumim que também vende — dupla participação)
     const temPct=c=>c.comissao_pct!=null&&c.comissao_pct!=='';
     const garcons=(S.funcionarios||[]).filter(f=>{const c=cargoDe(f);return c.grupo_rateio==='salao'||temPct(c);});
@@ -2158,12 +2159,16 @@ window._viewEscala=function(){
     const T=garSujo+globalSujo;
     const distribuida=T*(1-retPct/100);
     const nG=garcons.length;
-    // bolo G2/G3
-    let bolo=0, nG23=0;
-    Object.values(g).forEach(x=>{ if(x.pct < basePct-1e-9){ bolo+=(basePct-x.pct)*x.sujo; nG23++; } });
-    const distG23 = nG23>0 ? bolo/nG23 : 0;
+    // bolo G2/G3 = Σ(basePct − pct)×vendas dos G2/G3. Destino configurável:
+    // 'g23' (Campos): dividido igualmente entre os próprios G2/G3 · 'g1' (Bam Bam): dividido igualmente entre os G1
+    let bolo=0, nBaixo=0, nTopo=0;
+    Object.values(g).forEach(x=>{ if(x.pct < basePct-1e-9){ bolo+=(basePct-x.pct)*x.sujo; nBaixo++; } else nTopo++; });
+    const distPara=(cfg.dist_g23_para==='g1')?'g1':'g23';
+    const recebeBolo=x=> distPara==='g1' ? x.pct>=basePct-1e-9 : x.pct<basePct-1e-9;
+    const nReceb=distPara==='g1'?nTopo:nBaixo;
+    const distG23 = nReceb>0 ? bolo/nReceb : 0;
     // GLOBAL POR DIA: cada dia é dividido apenas entre os garçons SELECIONADOS manualmente (global_rateio)
-    const selByDia={}; (S.globalRateio||[]).forEach(x=>{ (selByDia[x.data]=selByDia[x.data]||[]).push(x.funcionario_id); });
+    const selByDia={}; (rateio||[]).forEach(x=>{ (selByDia[x.data]=selByDia[x.data]||[]).push(x.funcionario_id); });
     const globalComissao=globalSujo*basePct;
     let globalPendente=0;
     const globalDias=Object.keys(globalDiasMap).sort().map(d=>{
@@ -2175,7 +2180,7 @@ window._viewEscala=function(){
     });
     Object.values(g).forEach(x=>{
       x.comLimpa=x.pct*x.sujo;
-      x.distG23=(x.pct < basePct-1e-9)?distG23:0;
+      x.distG23=recebeBolo(x)?distG23:0;
       x.global=x.global||0;
       x.caixinha=x.rep;
       x.total=x.comLimpa+x.distG23+x.global+x.caixinha;
@@ -2192,7 +2197,8 @@ window._viewEscala=function(){
     return { retPct,pSalao,pRet,pMai, garSujo, globalSujo, globalRep, ignoradoSujo, T, distribuida,
       retencaoVal:T*retPct/100, salaoPool:distribuida*pSalao/100, retagPool, maiPool, basePct,
       g, garcons, retag, maitres, rsPonto, maiEach, salaoTotal, nG, globalDias, globalPendente, globalComissao };
-  };
+  }
+  window.calcCampos=function(){ return calcCamposFrom(S.vendas||[], S.globalRateio||[]); };
 
   /* ---------- tela ---------- */
   function semanaSelector(){
@@ -2250,8 +2256,140 @@ window._viewEscala=function(){
         <input type="file" accept=".csv,text/csv" onchange="campArquivo(this)" class="text-sm">
       </div>`,'mb-4');
   }
+  /* ---------- fechamento mensal: ADIANTAMENTO (dia 20) e OFICIAL (dia 5) ----------
+     Adiantamento: garçom que opta = 40% salário + comissão das semanas da janela; retaguarda = só 40% (sem comissão).
+     Oficial: garçom = salário + comissão das semanas da janela − 40% adiantado; retaguarda = salário + comissão
+     dos 30 dias (desde o início do adiantamento anterior) − 40% adiantado. */
+  let campFech={tipo:'adiantamento', ini:'', fim:''};
+  let campFechRes=null;
+  window.campCalcularFechamento=async function(){
+    const tipo=val('cfch_tipo')||campFech.tipo, ini=val('cfch_ini'), fim=val('cfch_fim');
+    if(!ini||!fim){ alert('Informe o período de apuração do fechamento.'); return; }
+    if(fim<ini){ alert('Fim não pode ser antes do início.'); return; }
+    campFech={tipo,ini,fim};
+    const adiantPct=Number(S.config.adiantamento_pct)||40;
+    const semanas=S.periodos.filter(p=>p.tipo_pagamento==='semanal'&&p.data_inicio>=ini&&p.data_inicio<=fim);
+    let iniRet=ini, temAdiantAnterior=false;
+    if(tipo==='oficial'){
+      const ant=S.periodos.filter(p=>p.tipo_pagamento==='adiantamento'&&p.data_inicio<ini).sort((a,b)=>b.data_inicio.localeCompare(a.data_inicio))[0];
+      if(ant){ iniRet=ant.data_inicio; temAdiantAnterior=true; }
+    }
+    const semanasRet = tipo==='oficial' ? S.periodos.filter(p=>p.tipo_pagamento==='semanal'&&p.data_inicio>=iniRet&&p.data_inicio<=fim) : [];
+    const ids=[...new Set([...semanas,...semanasRet].map(p=>p.id))];
+    if(!ids.length){ alert('Nenhuma semana importada nessa janela. Importe os relatórios TOTVS primeiro.'); return; }
+    const [v,gr]=await Promise.all([
+      sb.from('vendas_totvs').select('*').in('periodo_id',ids),
+      sb.from('global_rateio').select('*').in('periodo_id',ids),
+    ]);
+    const byPer={}; (v.data||[]).forEach(x=>{ (byPer[x.periodo_id]=byPer[x.periodo_id]||{v:[],g:[]}).v.push(x); });
+    (gr.data||[]).forEach(x=>{ (byPer[x.periodo_id]=byPer[x.periodo_id]||{v:[],g:[]}).g.push(x); });
+    const somaG={}, somaR={}; const addTo=(m,id,vv)=>{ m[id]=(m[id]||0)+vv; };
+    const idsG=new Set(semanas.map(p=>p.id)), idsR=new Set(semanasRet.map(p=>p.id));
+    let pend=0;
+    ids.forEach(pid=>{
+      const d=byPer[pid]; if(!d) return;
+      const c=calcCamposFrom(d.v,d.g);
+      if(idsG.has(pid)){ Object.values(c.g).forEach(x=>addTo(somaG,x.f.id,x.total)); pend+=c.globalPendente||0; }
+      if(tipo==='oficial'&&idsR.has(pid)){
+        c.retag.forEach(f=>{ const cg=S.cargos.find(k=>k.id===f.cargo_id)||{};
+          addTo(somaR,f.id,(Number(cg.pontos)||0)*c.rsPonto+(cg.maitre_5pct===true?c.maiEach:0)); });
+      }
+    });
+    const temPct=c=>c&&c.comissao_pct!=null&&c.comissao_pct!=='';
+    const rows=(S.funcionarios||[]).map(f=>{
+      const cg=S.cargos.find(k=>k.id===f.cargo_id)||{};
+      const isGar=cg.grupo_rateio==='salao'||temPct(cg);
+      const isRet=cg.grupo_rateio==='retaguarda';
+      if(!isGar&&!isRet) return null;
+      const sal=Number(f.salario)||0;
+      const opta=f.adiantamento!==false;   // flag do cadastro ("Adiantamento sim/não")
+      const recebe40=(isGar&&opta)||isRet; // retaguarda: 40% p/ todos
+      let adiantSal=0, com=0, desc=0, total=0;
+      if(tipo==='adiantamento'){
+        adiantSal=recebe40?sal*adiantPct/100:0;
+        com=isGar?(somaG[f.id]||0):0;
+        total=adiantSal+com;
+      } else {
+        com=(isGar?(somaG[f.id]||0):0)+(isRet?(somaR[f.id]||0):0);
+        desc=(recebe40&&temAdiantAnterior)?sal*adiantPct/100:0;
+        total=sal+com-desc;
+      }
+      return {f,grupo:isGar?(isRet?'Salão+Retag.':'Salão'):'Retaguarda',sal,opta,adiantSal,com,desc,total,isGar,isRet};
+    }).filter(Boolean).sort((a,b)=>b.total-a.total);
+    campFechRes={rid:S.restaurante.id,tipo,ini,fim,iniRet,temAdiantAnterior,adiantPct,rows,pend,nSem:semanas.length,nSemRet:semanasRet.length};
+    render();
+  };
+  window.campSalvarFechamento=async function(){
+    const r=campFechRes; if(!r) return;
+    let per=S.periodos.find(p=>p.tipo_pagamento===r.tipo&&p.data_inicio===r.ini&&p.data_fim===r.fim);
+    if(!per){ const d=new Date(r.ini+'T00:00:00');
+      const {data,error}=await sb.from('periodos').insert({restaurante_id:S.restaurante.id,ciclo_id:null,tipo_pagamento:r.tipo,funcionario_id:null,ano:d.getFullYear(),mes:d.getMonth()+1,data_inicio:r.ini,data_fim:r.fim,dias_periodo:diasEntre(r.ini,r.fim),taxa_servico_total:0,retencao_pct:Number(S.config.retencao_casa_pct)||33,status:'aberto'}).select('*').single();
+      if(error){ alert('Erro ao criar período: '+error.message); return; } per=data; S.periodos.push(per); }
+    const totCom=r.rows.reduce((a,x)=>a+x.com,0), tot=r.rows.reduce((a,x)=>a+x.total,0);
+    const {error}=await sb.from('pagamentos').insert({restaurante_id:S.restaurante.id,periodo_id:per.id,ciclo:r.tipo==='adiantamento'?'Adiantamento':'Oficial',data_pagamento:r.fim,apuracao:fmtData(new Date(r.ini+'T00:00:00'))+' a '+fmtData(new Date(r.fim+'T00:00:00')),colaboradores:r.rows.filter(x=>x.total>0).length,total_comissao:totCom,total_folha:tot,status:'Previsto'});
+    if(error){ alert('Erro ao salvar: '+error.message); return; }
+    await carregarDados(); render(); alert('Fechamento salvo em Relatórios.');
+  };
+  window.campFechCSV=function(){
+    const r=campFechRes; if(!r) return;
+    const L=['Colaborador;Grupo;Salario;Opta40;Adiant40;Comissao;DescontoAdiant;Total'];
+    r.rows.forEach(x=>L.push([x.f.nome,x.grupo,x.sal.toFixed(2),x.opta?'sim':'nao',x.adiantSal.toFixed(2),x.com.toFixed(2),x.desc.toFixed(2),x.total.toFixed(2)].join(';')));
+    const blob=new Blob(['﻿'+L.join('\n')],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download='fechamento_'+r.tipo+'_'+r.ini+'_'+r.fim+'.csv'; a.click();
+  };
+  function fechamentoCard(){
+    const pode=podeEscrever('comissao');
+    let r=campFechRes; if(r&&r.rid!==S.restaurante.id) r=null;
+    const form=pode?`<div class="flex flex-wrap items-center gap-2 mb-1">
+        <select id="cfch_tipo" class="px-2 py-2 border border-slate-200 rounded text-sm">
+          <option value="adiantamento" ${campFech.tipo==='adiantamento'?'selected':''}>Adiantamento (dia 20)</option>
+          <option value="oficial" ${campFech.tipo==='oficial'?'selected':''}>Oficial (dia 5)</option>
+        </select>
+        <label class="text-xs text-slate-500">apuração</label>
+        <input id="cfch_ini" type="date" value="${campFech.ini}" class="px-2 py-2 border border-slate-200 rounded text-sm">
+        <span class="text-slate-400 text-xs">a</span>
+        <input id="cfch_fim" type="date" value="${campFech.fim}" class="px-2 py-2 border border-slate-200 rounded text-sm">
+        <button onclick="campCalcularFechamento()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-1"><i data-feather="play" class="w-4 h-4"></i>Calcular</button>
+      </div><p class="text-[11px] text-slate-400 mb-3">Agrega as <strong>semanas importadas</strong> cuja data de início cai na janela. Adiantamento: garçom que opta recebe ${num(Number(S.config.adiantamento_pct)||40,0)}% do salário + comissão; retaguarda só os ${num(Number(S.config.adiantamento_pct)||40,0)}%. Oficial: salário + comissão − adiantamento (retaguarda: comissão dos 30 dias).</p>`:'';
+    let tab='';
+    if(r){
+      const isAd=r.tipo==='adiantamento';
+      const linhas=r.rows.map(x=>`<tr class="border-b border-slate-100 hover:bg-blue-50/40">
+          <td class="px-3 py-2 font-medium">${x.f.nome}${(!x.opta&&x.isGar)?' <span class="badge bg-slate-100 text-slate-500 text-[9px]">não opta 40%</span>':''}</td>
+          <td class="px-3 py-2 text-xs text-slate-500">${x.grupo}</td>
+          <td class="px-3 py-2 text-right">${money(x.sal)}</td>
+          ${isAd?`<td class="px-3 py-2 text-right">${x.adiantSal?money(x.adiantSal):'—'}</td>`:''}
+          <td class="px-3 py-2 text-right">${x.com?money(x.com):'—'}</td>
+          ${!isAd?`<td class="px-3 py-2 text-right text-red-600">${x.desc?'−'+money(x.desc):'—'}</td>`:''}
+          <td class="px-3 py-2 text-right font-bold text-blue-700">${money(x.total)}</td></tr>`).join('');
+      const tt=k=>r.rows.reduce((a,x)=>a+x[k],0);
+      tab=`<div class="mt-2 mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div class="text-sm text-slate-600"><span class="badge ${isAd?'bg-amber-100 text-amber-700':'bg-blue-100 text-blue-700'}">${isAd?'Adiantamento':'Oficial'}</span>
+            ${r.ini.split('-').reverse().join('/')} a ${r.fim.split('-').reverse().join('/')} · ${r.nSem} semana(s)${!isAd?` · retaguarda desde ${r.iniRet.split('-').reverse().join('/')} (${r.nSemRet} sem.)`:''}
+            ${!isAd&&!r.temAdiantAnterior?' · <span class="text-amber-600">sem adiantamento anterior — nada descontado</span>':''}</div>
+          <div class="flex gap-2">
+            <button onclick="campFechCSV()" class="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700">CSV</button>
+            ${pode?`<button onclick="campSalvarFechamento()" class="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700">Salvar em Relatórios</button>`:''}
+          </div></div>
+        ${r.pend>0?`<div class="mb-2 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">Atenção: ${money(r.pend)} de comissão Global sem divisão nas semanas desta janela — selecione os garçons antes de fechar.</div>`:''}
+        <div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-left text-xs text-slate-500 border-b border-slate-200">
+          <th class="px-3 py-2">Colaborador</th><th class="px-3 py-2">Grupo</th><th class="px-3 py-2 text-right">Salário</th>
+          ${isAd?'<th class="px-3 py-2 text-right">Adiant. '+num(r.adiantPct,0)+'%</th>':''}
+          <th class="px-3 py-2 text-right">Comissão</th>
+          ${!isAd?'<th class="px-3 py-2 text-right">Desc. adiant.</th>':''}
+          <th class="px-3 py-2 text-right">Total a pagar</th></tr></thead>
+        <tbody>${linhas}</tbody>
+        <tfoot><tr class="border-t-2 border-slate-200 font-semibold bg-slate-50"><td class="px-3 py-2" colspan="2">Total</td><td class="px-3 py-2 text-right">${money(tt('sal'))}</td>${isAd?`<td class="px-3 py-2 text-right">${money(tt('adiantSal'))}</td>`:''}<td class="px-3 py-2 text-right">${money(tt('com'))}</td>${!isAd?`<td class="px-3 py-2 text-right text-red-600">−${money(tt('desc'))}</td>`:''}<td class="px-3 py-2 text-right text-blue-700">${money(tt('total'))}</td></tr></tfoot></table></div>`;
+    }
+    if(!pode&&!r) return '';
+    return card(`<div class="p-5"><h3 class="font-bold mb-2 flex items-center gap-2"><i data-feather="credit-card" class="w-4 h-4 text-blue-600"></i>Fechamento — Adiantamento / Oficial</h3>${form}${tab}</div>`,'mb-4');
+  }
+
   /* ---------- global por dia: seleção manual de quem divide ---------- */
+  const campSemData=()=>alert('Esta importação foi feita antes da regra do Global por dia e não tem a data dos lançamentos.\nReimporte o relatório TOTVS desta semana (botão Reimportar) para habilitar a seleção por dia.');
   window.campToggleGlobal=async function(data,fid){
+    if(data==='sem-data'){ campSemData(); return; }
     fid=+fid;
     const ex=(S.globalRateio||[]).find(x=>x.data===data&&x.funcionario_id===fid);
     if(ex){ await sb.from('global_rateio').delete().eq('id',ex.id); S.globalRateio=S.globalRateio.filter(x=>x.id!==ex.id); }
@@ -2260,6 +2398,7 @@ window._viewEscala=function(){
     render();
   };
   window.campGlobalTodos=async function(data){
+    if(data==='sem-data'){ campSemData(); return; }
     const c=calcCampos(); const falta=c.garcons.filter(f=>!(S.globalRateio||[]).some(x=>x.data===data&&x.funcionario_id===f.id));
     if(!falta.length) return;
     const recs=falta.map(f=>({restaurante_id:S.restaurante.id,periodo_id:S.periodoAtual.id,data,funcionario_id:f.id}));
@@ -2268,6 +2407,7 @@ window._viewEscala=function(){
     S.globalRateio=S.globalRateio.concat(novos||[]); render();
   };
   window.campGlobalLimpar=async function(data){
+    if(data==='sem-data'){ campSemData(); return; }
     await sb.from('global_rateio').delete().eq('periodo_id',S.periodoAtual.id).eq('data',data);
     S.globalRateio=(S.globalRateio||[]).filter(x=>x.data!==data); render();
   };
@@ -2276,6 +2416,12 @@ window._viewEscala=function(){
     const fmtD=d=>d==='sem-data'?'sem data':`${d.slice(8,10)}/${d.slice(5,7)}`;
     const podeSel=podeEscrever('comissao');
     const blocos=c.globalDias.map(gd=>{
+      if(gd.data==='sem-data'){
+        return `<div class="p-3 border border-amber-300 bg-amber-50/40 rounded mb-2">
+          <div class="text-sm mb-1"><strong>Importação antiga</strong> · sujo ${money(gd.sujo)} · comissão <strong>${money(gd.com)}</strong></div>
+          <p class="text-xs text-amber-700">Esta semana foi importada antes da regra do Global por dia (sem as datas). Clique em <strong>Reimportar</strong> e suba o mesmo relatório TOTVS — os lançamentos globais passarão a aparecer por dia para seleção.</p>
+        </div>`;
+      }
       const chips=c.garcons.slice().sort((a,b)=>a.nome.localeCompare(b.nome)).map(f=>{
         const on=gd.sel.includes(f.id);
         return podeSel?`<button onclick="campToggleGlobal('${gd.data}',${f.id})" class="px-2 py-1 rounded text-xs border ${on?'bg-blue-600 text-white border-blue-600':'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}">${f.nome.split(' ')[0]}</button>`
@@ -2341,11 +2487,11 @@ window._viewEscala=function(){
   function viewComissaoCampos(){
     const header=pageHeader('Comissão Individual — Mercearia Campos','Relatório TOTVS por garçom · salão 63% (individual) · retaguarda 32% (pontos) · maître 5%');
     if(!S.periodoAtual){
-      return header+semanaSelector()+card(`<div class="p-12 text-center text-slate-400"><i data-feather="calendar" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Crie uma semana (acima) para importar o relatório e calcular a comissão.</p></div>`);
+      return header+semanaSelector()+fechamentoCard()+card(`<div class="p-12 text-center text-slate-400"><i data-feather="calendar" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Crie uma semana (acima) para importar o relatório e calcular a comissão.</p></div>`);
     }
     if(campImport) return header+semanaSelector()+importPreview();
     const temVendas=(S.vendas||[]).length>0;
-    if(!temVendas) return header+semanaSelector()+uploadBox()+card(`<div class="p-10 text-center text-slate-400"><i data-feather="inbox" class="w-9 h-9 mx-auto mb-2"></i><p class="text-sm">Importe o relatório TOTVS desta semana para ver a comissão.</p></div>`);
+    if(!temVendas) return header+semanaSelector()+uploadBox()+fechamentoCard()+card(`<div class="p-10 text-center text-slate-400"><i data-feather="inbox" class="w-9 h-9 mx-auto mb-2"></i><p class="text-sm">Importe o relatório TOTVS desta semana para ver a comissão.</p></div>`);
     const c=calcCampos();
     const kpi=(lb,v,cls='')=>`<div class="p-3 rounded ${cls||'bg-slate-50'}"><p class="text-xs text-slate-500">${lb}</p><p class="font-bold ${cls?'':'text-slate-700'}">${v}</p></div>`;
     const resumo=card(`<div class="p-5">
@@ -2369,7 +2515,7 @@ window._viewEscala=function(){
         ${podeEscrever('comissao')?`<button onclick="campSalvarRelatorio()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="save" class="w-4 h-4"></i>Salvar em Relatórios</button>
         <button onclick="campLimparVendas()" class="px-3 py-2 border border-rose-200 text-rose-600 rounded text-sm hover:bg-rose-50">Reimportar</button>`:''}
       </div>`;
-    return header+semanaSelector()+resumo+globalCard(c)+acoes+tabelaCampos(c);
+    return header+semanaSelector()+resumo+globalCard(c)+acoes+tabelaCampos(c)+fechamentoCard();
   }
 
   /* ---------- exportações ---------- */
