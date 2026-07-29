@@ -520,7 +520,8 @@ async function salvarCadastro(){
   modalCad=null; await carregarDados(); render();
 }
 async function excluirFuncionario(id){
-  if(!confirm('Excluir este funcionário?')) return;
+  const f=S.funcionarios.find(x=>x.id===id)||{};
+  if(!confirm('Excluir '+(f.nome||'este funcionário')+' DEFINITIVAMENTE?\n\nA exclusão apaga o ponto, comissões e afastamentos dele; escala e extras ficam sem o vínculo.\n\nSe é um DESLIGAMENTO, prefira Editar → "Data de desligamento": a comissão para na data e todo o histórico é preservado.')) return;
   const {error}=await sb.from('funcionarios').delete().eq('id',id);
   if(error){ alert('Erro ao excluir: '+error.message); return; }
   await carregarDados(); render();
@@ -2075,16 +2076,21 @@ window._viewEscala=function(){
     let di='', df='';
     lines.slice(0,hi).forEach(l=>{ const m1=l.match(/Data Inicial\s*:\s*(\d{2}\/\d{2}\/\d{4})/); if(m1) di=m1[1]; const m2=l.match(/Data Final\s*:\s*(\d{2}\/\d{2}\/\d{4})/); if(m2) df=m2[1]; });
     const loja=String(S.config.loja_totvs||1);
+    // corta pelo período selecionado: lançamentos fora de [data_inicio, data_fim] são ignorados
+    const pIni=S.periodoAtual?S.periodoAtual.data_inicio:null, pFim=S.periodoAtual?S.periodoAtual.data_fim:null;
+    let foraN=0, foraSujo=0;
     const agg={};
     for(let i=hi+1;i<lines.length;i++){
       const l=lines[i]; if(!l.trim()) continue;
       const p=l.split(';'); if(p.length<11) continue;
       if(String(p[2]).trim()!==loja) continue;
       const cod=String(p[0]).trim();
+      const dm=String(p[1]||'').trim().match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+      const iso=dm?(dm[3]+'-'+dm[2]+'-'+dm[1]):null;
+      if(iso && pIni && pFim && (iso<pIni || iso>pFim)){ foraN++; foraSujo+=ptNum(p[5]); continue; }
       (agg[cod]=agg[cod]||{sujo:0,rep:0,atend:0,dias:{}});
       agg[cod].sujo+=ptNum(p[5]); agg[cod].rep+=ptNum(p[6]); agg[cod].atend+=parseInt(ptNum(p[3]))||0;
-      const dm=String(p[1]||'').trim().match(/^(\d{2})\/(\d{2})\/(\d{4})/);
-      if(dm){ const iso=dm[3]+'-'+dm[2]+'-'+dm[1]; (agg[cod].dias[iso]=agg[cod].dias[iso]||{sujo:0,rep:0}); agg[cod].dias[iso].sujo+=ptNum(p[5]); agg[cod].dias[iso].rep+=ptNum(p[6]); }
+      if(iso){ (agg[cod].dias[iso]=agg[cod].dias[iso]||{sujo:0,rep:0}); agg[cod].dias[iso].sujo+=ptNum(p[5]); agg[cod].dias[iso].rep+=ptNum(p[6]); }
     }
     const codes=Object.keys(agg);
     if(!codes.length){ alert('Nenhuma linha da loja '+loja+' encontrada no arquivo. Confira a "Loja TOTVS" nas Configurações.'); return; }
@@ -2096,7 +2102,7 @@ window._viewEscala=function(){
       else if(f){ const cg=cargoDe(f); if(cg.comissao_pct!=null&&cg.comissao_pct!=='') tipo='garcom'; else if(cg.maitre_5pct===true) tipo='global'; else if(cg.grupo_rateio==='salao') tipo='garcom'; else tipo='ignorado'; }
       return { codigo:cod, sujo:agg[cod].sujo, rep:agg[cod].rep, atend:agg[cod].atend, dias:agg[cod].dias, funcId:f?f.id:null, nome:f?f.nome:(cod===codGlobal?'GLOBAL (eventos)':'—'), tipo, override:'auto' };
     }).sort((a,b)=>b.sujo-a.sujo);
-    campImport={di,df,loja,rows};
+    campImport={di,df,loja,rows,foraN,foraSujo};
     render();
   }
   window.campSetOverride=function(codigo,v){ const r=campImport.rows.find(x=>x.codigo===codigo); if(r){ r.override=v; render(); } };
@@ -2240,6 +2246,7 @@ window._viewEscala=function(){
           <span class="text-xs text-slate-500">Loja ${campImport.loja} · ${campImport.rows.length} códigos · sujo total ${money(totSujo)}</span>
         </div>
         <p class="text-[11px] text-slate-400 mb-2">Vendas de maître caem em <strong>Global</strong> por padrão. Use a coluna "Crédito" para reatribuir um lançamento a um garçom (correção de erro) ou ignorar.</p>
+        ${campImport.foraN>0?`<div class="mb-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">${campImport.foraN} lançamento(s) do arquivo com data <strong>fora do período ${S.periodoAtual.data_inicio.split('-').reverse().join('/')}–${S.periodoAtual.data_fim.split('-').reverse().join('/')}</strong> foram ignorados (${money(campImport.foraSujo)} de sujo).</div>`:''}
         <div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-left text-xs text-slate-500 border-b border-slate-200">
           <th class="px-2 py-1.5">Código</th><th class="px-2 py-1.5">Colaborador</th><th class="px-2 py-1.5 text-center">Tipo</th><th class="px-2 py-1.5 text-right">Sujo</th><th class="px-2 py-1.5 text-right">Repique</th><th class="px-2 py-1.5">Crédito</th>
         </tr></thead><tbody>${rows}</tbody></table></div>
