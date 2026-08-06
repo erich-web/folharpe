@@ -277,13 +277,14 @@ const PAGES=[
   {id:'ranking',label:'Ranking',icon:'award'},
   {id:'holerite',label:'Holerite',icon:'file-text',beta:true},
   {id:'relatorios',label:'Relatórios',icon:'bar-chart-2'},
+  {id:'melhorias',label:'Melhorias',icon:'message-square'},
   {id:'usuarios',label:'Usuários',icon:'shield'},
 ];
-const ACESSO={ admin:['dashboard','cadastro','estrutura','config','ponto','escala','extras','comissao','ranking','holerite','relatorios','usuarios'],
-  rh:['dashboard','cadastro','estrutura','ponto','escala','extras','comissao','ranking','holerite','relatorios'],
-  lider:['dashboard','ponto','escala','relatorios'],
-  gerente:['dashboard','escala','relatorios'],
-  viewer:['dashboard','comissao','relatorios'] };
+const ACESSO={ admin:['dashboard','cadastro','estrutura','config','ponto','escala','extras','comissao','ranking','holerite','relatorios','melhorias','usuarios'],
+  rh:['dashboard','cadastro','estrutura','ponto','escala','extras','comissao','ranking','holerite','relatorios','melhorias'],
+  lider:['dashboard','ponto','escala','relatorios','melhorias'],
+  gerente:['dashboard','escala','relatorios','melhorias'],
+  viewer:['dashboard','comissao','relatorios','melhorias'] };
 function papel(){ return S.perfil?.papel || 'viewer'; }
 function podeVer(id){ return (ACESSO[papel()]||ACESSO.viewer).includes(id); }
 function podeEscrever(area){ const p=papel(); if(p==='admin')return true; if(p==='viewer')return false;
@@ -293,6 +294,7 @@ const LABEL_PAPEL={admin:'Administrador',rh:'RH',lider:'Líder',gerente:'Gerente
 function go(id){ if(!podeVer(id))return; current=id; menuOpen=false;
   if(id==='ponto'){ if(typeof pontoRange!=='undefined'){ if(!pontoRange){const h=new Date();pontoRange={ini:`${h.getFullYear()}-${String(h.getMonth()+1).padStart(2,'0')}-01`,fim:ymdStr(new Date(h.getFullYear(),h.getMonth()+1,0))};} carregarPontoGrid().then(render); return; } }
   if(id==='escala'){ if(typeof carregarEscala==='function'){ carregarEscala().then(render); return; } }
+  if(id==='melhorias'){ if(typeof carregarSugestoes==='function'){ carregarSugestoes().then(render); return; } }
   render(); }
 function val(id){ return (document.getElementById(id)||{}).value; }
 
@@ -614,6 +616,7 @@ function render(){
     comissao:()=>(wv('Comissao')?wv('Comissao')():viewStub('Comissão Quinzenal')),
     ranking:()=>(wv('Ranking')?wv('Ranking')():viewStub('Ranking')),
     relatorios:()=>(wv('Relatorios')?wv('Relatorios')():viewStub('Relatórios')),
+    melhorias:()=>(wv('Melhorias')?wv('Melhorias')():viewStub('Melhorias')),
     holerite:()=>(wv('Holerite')?wv('Holerite')():viewStub('Holerite')),
     usuarios:()=>(wv('Usuarios')?wv('Usuarios')():viewStub('Usuários'))};
   const v=views[current]||viewDashboard;
@@ -2144,7 +2147,7 @@ window._viewEscala=function(){
   function calcCamposFrom(vendas, rateio){
     const cfg=S.config||{};
     const retPct=Number(cfg.retencao_casa_pct)||33;
-    const pSalao=Number(cfg.camp_salao_pct)||63, pRet=Number(cfg.camp_retaguarda_pct)||32, pMai=Number(cfg.camp_maitre_pct)||5;
+    const pSalao=Number(cfg.camp_salao_pct??63), pRet=Number(cfg.camp_retaguarda_pct??32), pMai=Number(cfg.camp_maitre_pct??5);
     vendas=vendas||[];
     // salão individual = grupo salão OU qualquer cargo com % próprio (ex.: Cumim que também vende — dupla participação)
     const temPct=c=>c.comissao_pct!=null&&c.comissao_pct!=='';
@@ -2492,7 +2495,9 @@ window._viewEscala=function(){
     return garTab+rtTab;
   }
   function viewComissaoCampos(){
-    const header=pageHeader('Comissão Individual — Mercearia Campos','Relatório TOTVS por garçom · salão 63% (individual) · retaguarda 32% (pontos) · maître 5%');
+    const cfgH=S.config||{};
+    const header=pageHeader('Comissão Individual — '+(S.restaurante?.nome||''),
+      'Relatório TOTVS por garçom · salão '+num(cfgH.camp_salao_pct??63,0)+'% (individual) · retaguarda '+num(cfgH.camp_retaguarda_pct??32,0)+'% (pontos)'+((Number(cfgH.camp_maitre_pct??5))>0?' · maître '+num(cfgH.camp_maitre_pct??5,0)+'%':''));
     if(!S.periodoAtual){
       return header+semanaSelector()+fechamentoCard()+card(`<div class="p-12 text-center text-slate-400"><i data-feather="calendar" class="w-10 h-10 mx-auto mb-3"></i><p class="text-sm">Crie uma semana (acima) para importar o relatório e calcular a comissão.</p></div>`);
     }
@@ -2565,6 +2570,91 @@ window._viewEscala=function(){
       colaboradores:nColab, total_comissao:c.salaoTotal, total_folha:totalGeral, status:'Previsto' });
     if(error){ alert('Erro ao salvar: '+error.message); return; }
     await carregarDados(); render(); alert('Relatório salvo em Relatórios.');
+  };
+})();
+</script>
+<!-- ===================== MELHORIAS (sugestões do time) ===================== -->
+<script>
+(function(){
+  const ST_SUG={aberta:['Aberta','bg-blue-100 text-blue-700'],em_analise:['Em análise','bg-amber-100 text-amber-700'],
+    em_desenvolvimento:['Em desenvolvimento','bg-purple-100 text-purple-700'],publicada:['Publicada','bg-green-100 text-green-700'],
+    recusada:['Recusada','bg-slate-200 text-slate-600']};
+  const PRIO={alta:['Alta','bg-rose-100 text-rose-700'],media:['Média','bg-amber-50 text-amber-700'],baixa:['Baixa','bg-slate-100 text-slate-500']};
+  let sugFiltro='ativas';
+  window.carregarSugestoes=async function(){
+    const {data,error}=await sb.from('sugestoes').select('*').order('created_at',{ascending:false});
+    S.sugestoes=data||[]; if(error) console.error(error);
+  };
+  window.addSugestao=async function(){
+    const titulo=(val('sg_titulo')||'').trim();
+    if(!titulo){ alert('Dê um título para a sugestão.'); return; }
+    const rec={ restaurante_id:S.restaurante?.id||null, titulo, descricao:(val('sg_desc')||'').trim()||null,
+      tela:val('sg_tela')||null, prioridade:val('sg_prio')||'media',
+      criado_por:S.perfil?.nome||S.session?.user?.email||'—' };
+    const {error}=await sb.from('sugestoes').insert(rec);
+    if(error){ alert('Erro: '+error.message); return; }
+    await carregarSugestoes(); render();
+  };
+  window.setSugStatus=async function(id,st){
+    const {error}=await sb.from('sugestoes').update({status:st,updated_at:new Date().toISOString()}).eq('id',id);
+    if(error){ alert('Erro: '+error.message); return; }
+    const s=(S.sugestoes||[]).find(x=>x.id===id); if(s)s.status=st; render();
+  };
+  window.delSugestao=async function(id){
+    if(!confirm('Excluir esta sugestão?')) return;
+    const {error}=await sb.from('sugestoes').delete().eq('id',id);
+    if(error){ alert('Erro: '+error.message); return; }
+    S.sugestoes=(S.sugestoes||[]).filter(x=>x.id!==id); render();
+  };
+  window.setSugFiltro=function(v){ sugFiltro=v; render(); };
+  window._viewMelhorias=function(){
+    const header=pageHeader('Melhorias','Sugestões e pedidos do time — registre aqui o que pode ficar melhor no sistema');
+    const podeGerir=['admin','rh'].includes(papel());
+    const telas=PAGES.map(p=>`<option value="${p.label}">${p.label}</option>`).join('');
+    const form=card(`<div class="p-5">
+        <h3 class="font-bold mb-3 flex items-center gap-2"><i data-feather="plus-circle" class="w-4 h-4 text-blue-600"></i>Nova sugestão</h3>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
+          <div class="md:col-span-2"><label class="text-xs text-slate-500 block mb-1">Título*</label><input id="sg_titulo" class="w-full px-3 py-2 border border-slate-200 rounded text-sm" placeholder="ex.: Exportar folha de ponto em Excel"></div>
+          <div><label class="text-xs text-slate-500 block mb-1">Tela relacionada</label><select id="sg_tela" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"><option value="">— geral —</option>${telas}</select></div>
+          <div><label class="text-xs text-slate-500 block mb-1">Prioridade</label><select id="sg_prio" class="w-full px-3 py-2 border border-slate-200 rounded text-sm"><option value="baixa">Baixa</option><option value="media" selected>Média</option><option value="alta">Alta</option></select></div>
+        </div>
+        <label class="text-xs text-slate-500 block mb-1">Descrição (o que acontece hoje e o que você gostaria)</label>
+        <textarea id="sg_desc" rows="3" class="w-full px-3 py-2 border border-slate-200 rounded text-sm mb-3"></textarea>
+        <div class="flex justify-end"><button onclick="addSugestao()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 flex items-center gap-2"><i data-feather="send" class="w-4 h-4"></i>Enviar sugestão</button></div>
+      </div>`,'mb-4');
+    let lista=(S.sugestoes||[]);
+    if(sugFiltro==='ativas') lista=lista.filter(s=>!['publicada','recusada'].includes(s.status));
+    else if(sugFiltro!=='todas') lista=lista.filter(s=>s.status===sugFiltro);
+    const fBtn=(v,l)=>`<button onclick="setSugFiltro('${v}')" class="px-3 py-1.5 rounded text-xs font-medium ${sugFiltro===v?'bg-blue-600 text-white':'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}">${l}</button>`;
+    const linhas=lista.map(s=>{
+      const st=ST_SUG[s.status]||ST_SUG.aberta, pr=PRIO[s.prioridade]||PRIO.media;
+      const dt=s.created_at?new Date(s.created_at).toLocaleDateString('pt-BR'):'—';
+      return `<div class="p-4 border-b border-slate-100">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2 flex-wrap mb-0.5">
+              <span class="font-semibold text-slate-800">${s.titulo}</span>
+              <span class="badge ${st[1]}">${st[0]}</span>
+              <span class="badge ${pr[1]}">${pr[0]}</span>
+              ${s.tela?`<span class="badge bg-slate-100 text-slate-500">${s.tela}</span>`:''}
+            </div>
+            ${s.descricao?`<p class="text-sm text-slate-600 whitespace-pre-wrap">${s.descricao}</p>`:''}
+            <p class="text-[11px] text-slate-400 mt-1">${s.criado_por||'—'} · ${dt}</p>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            ${podeGerir?`<select onchange="setSugStatus(${s.id},this.value)" class="px-2 py-1 border border-slate-200 rounded text-xs">
+              ${Object.keys(ST_SUG).map(k=>`<option value="${k}" ${s.status===k?'selected':''}>${ST_SUG[k][0]}</option>`).join('')}
+            </select>`:''}
+            ${papel()==='admin'?`<button onclick="delSugestao(${s.id})" class="text-slate-300 hover:text-red-500" title="excluir"><i data-feather="trash-2" class="w-4 h-4"></i></button>`:''}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+    const listaCard=card(`<div class="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+        <h3 class="font-bold flex items-center gap-2"><i data-feather="list" class="w-4 h-4 text-blue-600"></i>Fila de melhorias <span class="badge bg-slate-100 text-slate-500">${lista.length}</span></h3>
+        <div class="flex gap-1 flex-wrap">${fBtn('ativas','Ativas')}${fBtn('em_desenvolvimento','Em dev')}${fBtn('publicada','Publicadas')}${fBtn('todas','Todas')}</div>
+      </div>${linhas||'<div class="p-10 text-center text-slate-400 text-sm">Nenhuma sugestão aqui ainda. Registre a primeira acima!</div>'}`);
+    return header+form+listaCard;
   };
 })();
 </script>
